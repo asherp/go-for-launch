@@ -1,0 +1,40 @@
+[gd_scene load_steps=6 format=4 uid="uid://rfun8wpsyxxk"]
+
+[ext_resource type="Texture2D" uid="uid://wlxfp1pwuo3s" path="res://assets/isometric_tiles.png" id="1_478fv"]
+[ext_resource type="Script" uid="uid://b3owc7nynmmhr" path="res://scripts/tile_map_layer.gd" id="2_ofsxf"]
+[ext_resource type="PackedScene" uid="uid://c1uhh8k6kfxw5" path="res://scenes/player1.tscn" id="3_aq4yb"]
+
+[sub_resource type="TileSetAtlasSource" id="TileSetAtlasSource_iu15h"]
+texture = ExtResource("1_478fv")
+1:0/0 = 0
+1:0/0/texture_origin = Vector2i(0, -3)
+0:0/0 = 0
+0:0/0/texture_origin = Vector2i(0, -3)
+0:0/0/physics_layer_0/polygon_0/points = PackedVector2Array(0, -4, -8, 0, 0, 4, 8, 0)
+2:0/0 = 0
+2:0/0/texture_origin = Vector2i(0, -3)
+2:0/0/z_index = 1
+3:0/0 = 0
+3:0/0/texture_origin = Vector2i(0, -3)
+3:0/0/z_index = 1
+
+[sub_resource type="TileSet" id="TileSet_u0fyt"]
+tile_shape = 1
+tile_size = Vector2i(16, 8)
+physics_layer_0/collision_layer = 1
+sources/0 = SubResource("TileSetAtlasSource_iu15h")
+
+[node name="Node2D" type="Node2D"]
+
+[node name="TileMapLayer" type="TileMapLayer" parent="."]
+y_sort_enabled = true
+texture_filter = 1
+tile_map_data = PackedByteArray("AAAXACoAAAABAAAAAAAWACsAAAACAAAAAAAXACwAAAACAAAAAAAWAC0AAAABAAAAAAAXAC4AAAABAAAAAAAWAC8AAAABAAAAAAAZADMAAAABAAAAAAAaADIAAAABAAAAAAAZADEAAAABAAAAAAAZADAAAAABAAAAAAAbACYAAAABAAAAAAAXACsAAAABAAAAAAAYACoAAAABAAAAAAAYACsAAAADAAAAAAAYACwAAAADAAAAAAAYAC0AAAABAAAAAAAZAC4AAAABAAAAAAAZAC0AAAABAAAAAAAZACwAAAABAAAAAAAZAC8AAAABAAAAAAAaAC4AAAABAAAAAAAaAC8AAAABAAAAAAAaADAAAAABAAAAAAAaADEAAAABAAAAAAAZADIAAAABAAAAAAAXADAAAAABAAAAAAAXAC0AAAABAAAAAAAXAC8AAAABAAAAAAAYAC4AAAABAAAAAAAYAC8AAAABAAAAAAAYADEAAAABAAAAAAAYADAAAAABAAAAAAAaACgAAAABAAAAAAAaACcAAAABAAAAAAAZACkAAAABAAAAAAAaACoAAAABAAAAAAAZACsAAAABAAAAAAAZACoAAAABAAAAAAAXADEAAAACAAAAAAAYADIAAAACAAAAAAAYADMAAAACAAAAAAAZADQAAAACAAAAAAAWADAAAAACAAAAAAAWADEAAAACAAAAAAAWAC4AAAABAAAAAAAWACwAAAABAAAAAAAVAC8AAAACAAAAAAAVAC4AAAACAAAAAAAVAC0AAAABAAAAAAAVACwAAAABAAAAAAAXACkAAAABAAAAAAAYACcAAAABAAAAAAAYACYAAAABAAAAAAAXACUAAAABAAAAAAAXACYAAAABAAAAAAAWACcAAAABAAAAAAA=")
+tile_set = SubResource("TileSet_u0fyt")
+script = ExtResource("2_ofsxf")
+
+[node name="Player1" parent="." instance=ExtResource("3_aq4yb")]
+position = Vector2(386, 171)
+
+[node name="Camera2D" type="Camera2D" parent="Player1"]
+zoom = Vector2(6, 6)
