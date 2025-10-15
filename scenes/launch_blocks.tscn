@@ -1,12 +1,13 @@
-[gd_scene load_steps=15 format=4 uid="uid://cbtgusa4nk5fg"]
+[gd_scene load_steps=16 format=4 uid="uid://cbtgusa4nk5fg"]
 
 [ext_resource type="Texture2D" uid="uid://cxkyu2betuy2h" path="res://assets/iso_tileset.png" id="1_fk0uo"]
 [ext_resource type="Script" uid="uid://b3owc7nynmmhr" path="res://scripts/tile_map_layer.gd" id="2_58t6w"]
 [ext_resource type="Script" uid="uid://cluvo52yp3k1f" path="res://scripts/player_1.gd" id="2_vfr8r"]
 [ext_resource type="Texture2D" uid="uid://dk8cy5t0xs3nx" path="res://player/player.png" id="3_58t6w"]
 [ext_resource type="Script" uid="uid://bg7c610lua0wh" path="res://scripts/smooth_camera.gd" id="4_smooth"]
-[ext_resource type="Script" path="res://scripts/player_recorder.gd" id="5_recorder"]
-[ext_resource type="Script" path="res://scripts/countdown_timer.gd" id="6_timer"]
+[ext_resource type="Script" uid="uid://cfy08vjqx65dh" path="res://scripts/player_recorder.gd" id="5_recorder"]
+[ext_resource type="Script" uid="uid://bmnl7dtkpdrcq" path="res://scripts/countdown_timer.gd" id="6_timer"]
+[ext_resource type="Script" uid="uid://yb6p1xs55nb5" path="res://scripts/moveable_polygon.gd" id="7_polygon"]
 
 [sub_resource type="NavigationPolygon" id="NavigationPolygon_vfr8r"]
 vertices = PackedVector2Array(16, 0, 0, 8, -16, 0, 0, -8)
@@ -81,6 +82,19 @@ tile_set = SubResource("TileSet_imdxm")
 tile_map_data = PackedByteArray("AAABAAIAAAABAAAAAAACAAIAAAABAAAAAAADAAIAAAABAAAAAAAEAAIAAAABAAAAAAAFAAIAAAABAAAAAAAEAAEAAAABAAAAAAAFAAEAAAABAAAAAAAFAAAAAAABAAAAAAAEAAAAAAABAAAAAAABAAMAAAABAAAAAAACAAMAAAABAAAAAAADAAMAAAABAAAAAAAEAAMAAAABAAAAAAAFAAMAAAABAAAAAAAGAAMAAAABAAAAAAAGAAIAAAABAAAAAAAHAAIAAAABAAAAAAAGAAEAAAABAAAAAAAGAAAAAAABAAAAAAAHAAAAAAABAAAAAAAHAAEAAAABAAAAAAAHAAMAAAABAAAAAAABAAQAAAABAAAAAAACAAQAAAABAAAAAAADAAQAAAABAAAAAAAEAAQAAAABAAAAAAAFAAQAAAABAAAAAAAGAAQAAAABAAAAAAAHAAQAAAABAAAAAAAIAAQAAAABAAAAAAAJAAQAAAABAAAAAAAJAAMAAAABAAAAAAAKAAMAAAABAAAAAAAKAAIAAAABAAAAAAAJAAIAAAABAAAAAAAJAAEAAAABAAAAAAAIAAEAAAABAAAAAAAIAAIAAAABAAAAAAAIAAMAAAABAAAAAAAFAP//AAABAAAAAAAFAP7/AAABAAAAAAAFAP3/AAABAAAAAAAGAP7/AAABAAAAAAAGAP//AAABAAAAAAAHAP//AAABAAAAAAAIAP//AAABAAAAAAAIAAAAAAABAAAAAAAJAAAAAAABAAAAAAAIAP7/AAABAAAAAAAHAP7/AAABAAAAAAAGAP3/AAABAAAAAAAHAP3/AAABAAAAAAAIAP3/AAABAAAAAAAFAPz/AAAAAAAAAAAFAPv/AAAAAAAAAAAGAPv/AAAAAAAAAAAGAPz/AAAAAAAAAAAHAPz/AAAAAAAAAAAIAPz/AAAAAAAAAAAHAPv/AAAAAAAAAAAHAPr/AAAAAAAAAAAIAPv/AAAAAAAAAAAGAPr/AAAAAAAAAAAFAPr/AAAAAAAAAAAEAPr/AAAAAAAAAAAEAPv/AAAAAAAAAAAEAPz/AAAAAAAAAAD/////AAAAAAAAAAD//wEAAAAAAAAAAAAAAAIAAAAAAAAAAAAAAAMAAAAAAAAAAAAAAAQAAAAAAAAAAAD//wQAAAAAAAAAAAD//wMAAAAAAAAAAAD//wIAAAAAAAAAAAD+/wEAAAAAAAAAAAD+/wAAAAAAAAAAAAD+////AAAAAAAAAAD+//7/AAAAAAAAAAD+//3/AAAAAAAAAAD///3/AAAAAAAAAAADAPr/AAAAAAAAAAACAPr/AAAAAAAAAAABAPr/AAAAAAAAAAAAAPr/AAAAAAAAAAD///r/AAAAAAAAAAD+//r/AAAAAAAAAAD+//v/AAAAAAAAAAD+//z/AAAAAAAAAAADAPz/AAAAAAAAAAACAPz/AAAAAAAAAAABAPz/AAAAAAAAAAAAAPz/AAAAAAAAAAAAAPv/AAAAAAAAAAABAPv/AAAAAAAAAAACAPv/AAAAAAAAAAADAPv/AAAAAAAAAAD///v/AAAAAAAAAAD///z/AAAAAAAAAAD///7/AAAAAAAAAAD+/wIAAAAAAAAAAAD+/wMAAAAAAAAAAAD+/wQAAAAAAAAAAAAIAPr/AAAAAAAAAAD//wAAAAAAAAAAAAA=")
 tile_set = SubResource("TileSet_imdxm")
 script = ExtResource("2_58t6w")
+
+[node name="MoveablePolygon" type="CharacterBody2D" parent="GroundFloor" groups=["moveable"]]
+position = Vector2(100, 50)
+script = ExtResource("7_polygon")
+
+[node name="Polygon2D" type="Polygon2D" parent="GroundFloor/MoveablePolygon"]
+color = Color(0.23473272, 0.2664721, 0.18236038, 0.8)
+polygon = PackedVector2Array(12, -17, -17, -2, 10, 11, 43, -3)
+
+[node name="CollisionPolygon2D" type="CollisionPolygon2D" parent="GroundFloor/MoveablePolygon"]
+position = Vector2(-22, 14.635662)
+scale = Vector2(1.9166666, 2.2095587)
+polygon = PackedVector2Array(17.217392, -13.865062, 4.173916, -7.5289536, 17.217392, -1.6454258, 33.39131, -7.5289536)
 
 [node name="FirstFloor" type="TileMapLayer" parent="."]
 z_index = 1
@@ -174,4 +188,3 @@ theme_override_constants/margin_right = 20
 layout_mode = 2
 text = "01:00.00"
 script = ExtResource("6_timer")
-start_time = 60.0

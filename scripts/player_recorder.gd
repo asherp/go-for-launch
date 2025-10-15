@@ -807,6 +807,11 @@ func _record_position_checkpoint() -> void:
 	if not player:
 		return
 	
+	# Skip position checkpoints only while actively moving between waypoints
+	# (not when just having a navigation target set)
+	if "is_navigating" in player and player.is_navigating and "velocity" in player and player.velocity.length() > 1.0:
+		return
+	
 	var current_time = Time.get_ticks_msec() / 1000.0
 	var timestamp = current_time - recording_start_time
 	

@@ -44,9 +44,18 @@ var recording_elapsed_time := 0.0  # Time elapsed since recording started
 # Playback state
 var simulated_inputs: Dictionary = {}  # Store simulated input states during playback
 var is_in_playback_mode := false  # Flag to indicate we're in playback mode
+var playback_cancelled := false  # Flag to indicate playback was cancelled due to deviation
+var max_deviation_threshold := 30.0  # Maximum allowed deviation in pixels
+
+# Position correction system
+var is_correcting_position := false  # Flag to indicate we're in position correction mode
+var correction_target_position := Vector2.ZERO  # Target position for correction
+var correction_start_time := 0.0  # When correction started
+var correction_duration := 0.0  # How long to wait before checking position
+var correction_waypoint_index := 0  # Index of the waypoint we're navigating to
 
 # Playback visualization
-var expected_position_marker: Node2D = null  # Visual marker for expected position
+var recorded_position_markers: Array[Node2D] = []  # Visual markers for all recorded positions
 
 @onready var sprite: Sprite2D = get_node_or_null("Sprite2D")
 @onready var sprite_alt: Sprite2D = get_node_or_null("Player")
@@ -145,12 +154,12 @@ func _input(event: InputEvent) -> void:
 		if event.keycode == KEY_P and recorder:
 			print_recording_stats()
 		
-		# SPACE key - start/stop playback (with position correction)
+		# SPACE key - start/stop playback (without position correction)
 		if event.keycode == KEY_SPACE and event.ctrl_pressed and recorder:
 			if recorder.is_playing_back():
 				stop_playback()
 			else:
-				start_playback(1.0, true)  # Enable position correction by default
+				start_playback(1.0, false)  # Disable position correction
 	
 	# Handle mouse click for navigation
 	if event is InputEventMouseButton:
@@ -322,8 +331,12 @@ func _physics_process(delta: float) -> void:
 	var southwest := Vector2(-2, 1).normalized()  # Down-left on screen
 	var northwest := Vector2(-2, -1).normalized() # Up-left on screen
 	
+	# Update position correction system
+	_update_position_correction()
+	
 	# Check for manual input (keyboard) or simulated input during playback
-	var is_playback: bool = is_in_playback_mode
+	# Ghost players can always use simulated inputs, even during position correction
+	var is_playback: bool = is_in_playback_mode and not playback_cancelled and (not is_correcting_position or is_ghost)
 	
 	# During playback, use ONLY simulated inputs (ignore real keyboard)
 	var right_just_pressed: bool
@@ -363,8 +376,8 @@ func _physics_process(delta: float) -> void:
 		simulated_inputs["ui_up_just_pressed"] = false
 		simulated_inputs["ui_down_just_pressed"] = false
 	
-	# Manual input cancels navigation
-	if any_key_pressed:
+	# Manual input cancels navigation (but not for ghost players during correction)
+	if any_key_pressed and not (is_ghost and is_correcting_position):
 		is_navigating = false
 	
 	# Handle navigation (free movement, not restricted to diagonals)
@@ -830,6 +843,8 @@ func _on_recording_stopped() -> void:
 func _on_playback_started() -> void:
 	"""Called when playback starts"""
 	is_in_playback_mode = true
+	playback_cancelled = false  # Reset cancellation flag
+	is_correcting_position = false  # Reset correction flag
 	print("[Player] Playback started")
 	
 	# Clear any ongoing navigation
@@ -840,8 +855,8 @@ func _on_playback_started() -> void:
 	if sprite:
 		sprite.modulate = Color(0.7, 0.7, 1.0)  # Slight blue tint during playback
 	
-	# Create visual marker for expected position
-	_create_expected_position_marker()
+	# Create visual markers for all recorded positions
+	_create_recorded_positions_markers()
 
 func _on_playback_finished() -> void:
 	"""Called when playback finishes"""
@@ -851,7 +866,7 @@ func _on_playback_finished() -> void:
 	if is_ghost and loop_playback:
 		print("[Ghost] Looping playback...")
 		await get_tree().create_timer(0.5).timeout
-		await recorder.start_playback(1.0, true)
+		await recorder.start_playback(1.0, false)
 		return
 	
 	# Print accuracy statistics
@@ -869,8 +884,8 @@ func _on_playback_finished() -> void:
 	if sprite and not is_ghost:
 		sprite.modulate = Color(1.0, 1.0, 1.0)  # Normal color
 	
-	# Remove expected position marker
-	_remove_expected_position_marker()
+	# Remove recorded position markers
+	_remove_recorded_positions_markers()
 	
 	# Clear simulated inputs
 	for key in simulated_inputs.keys():
@@ -937,8 +952,8 @@ func stop_playback() -> void:
 	if sprite:
 		sprite.modulate = Color(1.0, 1.0, 1.0)
 	
-	# Remove expected position marker
-	_remove_expected_position_marker()
+	# Remove recorded position markers
+	_remove_recorded_positions_markers()
 	
 	print("[Player] Stopped playback")
 
@@ -989,54 +1004,266 @@ func get_most_recent_recording() -> String:
 	return latest_file
 
 ## Called when position deviation is detected during playback
-func _on_position_deviation(_actual: Vector2, expected: Vector2, deviation: float) -> void:
-	"""Update expected position marker"""
-	if expected_position_marker:
-		expected_position_marker.global_position = expected
+func _on_position_deviation(actual: Vector2, expected: Vector2, deviation: float) -> void:
+	"""Check if deviation exceeds threshold and start position correction if needed"""
+	if playback_cancelled or is_correcting_position:
+		return
+	
+	if deviation > max_deviation_threshold:
+		print("[Playback] Position deviation %.1fpx exceeds threshold %.1fpx - starting position correction" % [deviation, max_deviation_threshold])
+		_start_position_correction(expected)
+
+## Create visual markers for all recorded positions
+func _create_recorded_positions_markers() -> void:
+	if not recorder:
+		return
+	
+	var recorded_inputs = recorder.get_recorded_inputs()
+	var current_parent = get_parent()
+	
+	# Clear any existing markers
+	_remove_recorded_positions_markers()
+	
+	# Get total recording duration for color calculation
+	var total_duration = recorder.get_recording_duration()
+	if total_duration <= 0:
+		total_duration = 1.0  # Avoid division by zero
+	
+	# Create markers for each recorded position
+	for event in recorded_inputs:
+		if event.has("player_position"):
+			var pos = event.player_position
+			var position = Vector2(pos.x, pos.y)
+			
+			# Create marker node
+			var marker = Node2D.new()
+			marker.name = "RecordedPositionMarker"
+			
+			# Create a small circle marker
+			var circle = Polygon2D.new()
+			circle.name = "Circle"
+			var points = PackedVector2Array()
+			var segments = 8
+			var radius = 2.0
+			for i in range(segments):
+				var angle = (i / float(segments)) * TAU
+				points.append(Vector2(cos(angle), sin(angle)) * radius)
+			circle.polygon = points
+			
+			# Calculate color based on timestamp (black to white)
+			var timestamp = event.get("timestamp", 0.0)
+			var time_ratio = clamp(timestamp / total_duration, 0.0, 1.0)
+			var color_value = time_ratio  # 0.0 = black, 1.0 = white
+			circle.color = Color(color_value, color_value, color_value, 0.6)  # Grayscale with alpha
+			circle.z_index = 99
+			
+			marker.add_child(circle)
+			marker.global_position = position
+			
+			# Add to scene
+			current_parent.add_child(marker)
+			recorded_position_markers.append(marker)
+	
+	print("[Playback] Created %d position markers (black=start, white=end)" % recorded_position_markers.size())
+
+## Remove all recorded position markers
+func _remove_recorded_positions_markers() -> void:
+	for marker in recorded_position_markers:
+		if marker and is_instance_valid(marker):
+			marker.queue_free()
+	recorded_position_markers.clear()
+
+## Start position correction by navigating to next recorded position
+func _start_position_correction(expected_position: Vector2) -> void:
+	"""Start position correction by finding next recorded position and navigating to it"""
+	if not recorder:
+		return
+	
+	var recorded_inputs = recorder.get_recorded_inputs()
+	var current_time = recorder.get_playback_time()
+	
+	# Find the next recorded position after current time
+	var next_position = _find_next_recorded_position(recorded_inputs, current_time)
+	if next_position.is_empty():
+		print("[Playback] No next position found - navigating to last position")
+		_navigate_to_last_position()
+		return
+	
+	# Calculate dT (time difference to next position)
+	var dT = next_position.timestamp - current_time
+	correction_duration = dT
+	correction_start_time = Time.get_ticks_msec() / 1000.0
+	correction_target_position = next_position.position
+	correction_waypoint_index = next_position.index
+	is_correcting_position = true
+	
+	# Start navigation to the target position
+	if navigation_agent:
+		navigation_agent.target_position = next_position.position
+		is_navigating = true
+		print("[Playback] Navigating to correction target at (%.1f, %.1f) - dT: %.2fs" % [
+			next_position.position.x, next_position.position.y, dT
+		])
+
+## Find the next recorded position after the given time
+func _find_next_recorded_position(recorded_inputs: Array, current_time: float) -> Dictionary:
+	"""Find the next recorded position after current time"""
+	var best_position = {}
+	var best_time = INF
+	
+	for i in range(recorded_inputs.size()):
+		var event = recorded_inputs[i]
+		if event.has("player_position") and event.timestamp > current_time:
+			if event.timestamp < best_time:
+				best_time = event.timestamp
+				best_position = {
+					"position": Vector2(event.player_position.x, event.player_position.y),
+					"timestamp": event.timestamp,
+					"index": i
+				}
+	
+	return best_position
+
+## Update position correction system
+func _update_position_correction() -> void:
+	"""Update position correction system - check if correction time has elapsed"""
+	if not is_correcting_position:
+		return
+	
+	var elapsed_time = (Time.get_ticks_msec() / 1000.0) - correction_start_time
+	
+	if elapsed_time >= correction_duration:
+		# Check if player is within deviation of expected position
+		var current_pos = global_position
+		var deviation = current_pos.distance_to(correction_target_position)
 		
-		# Optional: Change marker color based on deviation
-		if expected_position_marker.has_node("Sprite"):
-			var marker_sprite = expected_position_marker.get_node("Sprite")
-			if deviation < 5.0:
-				marker_sprite.modulate = Color(0.0, 1.0, 0.0, 0.5)  # Green - good
-			elif deviation < 20.0:
-				marker_sprite.modulate = Color(1.0, 1.0, 0.0, 0.5)  # Yellow - okay
-			else:
-				marker_sprite.modulate = Color(1.0, 0.0, 0.0, 0.5)  # Red - poor
-	
-	# Optional: Draw a line between actual and expected
-	# queue_redraw()  # For custom _draw() implementation
+		if deviation <= max_deviation_threshold:
+			# Success! Resume normal playback
+			print("[Playback] Position correction successful - resuming playback")
+			_resume_normal_playback()
+		else:
+			# Still too far - double the time window and find next waypoint
+			print("[Playback] Still too far (%.1fpx) - doubling time window" % deviation)
+			_double_time_window_and_find_next_waypoint()
 
-## Create a visual marker showing expected position
-func _create_expected_position_marker() -> void:
-	# Create a simple circle marker
-	expected_position_marker = Node2D.new()
-	expected_position_marker.name = "ExpectedPositionMarker"
-	
-	# Create a simple visual (circle)
-	var circle = Polygon2D.new()
-	circle.name = "Circle"
-	var points = PackedVector2Array()
-	var segments = 16
-	var radius = 4.0
-	for i in range(segments):
-		var angle = (i / float(segments)) * TAU
-		points.append(Vector2(cos(angle), sin(angle)) * radius)
-	circle.polygon = points
-	circle.color = Color(1.0, 0.0, 0.0, 0.5)  # Semi-transparent red
-	circle.z_index = 100
-	
-	expected_position_marker.add_child(circle)
-	
-	# Add to scene at same level as player
-	get_parent().add_child(expected_position_marker)
-	expected_position_marker.global_position = global_position
+## Resume normal playback after successful correction
+func _resume_normal_playback() -> void:
+	"""Resume normal playback after successful position correction"""
+	is_correcting_position = false
+	is_navigating = false
+	# Normal playback will continue through the recorder
 
-## Remove the expected position marker
-func _remove_expected_position_marker() -> void:
-	if expected_position_marker:
-		expected_position_marker.queue_free()
-		expected_position_marker = null
+## Double time window and find next waypoint
+func _double_time_window_and_find_next_waypoint() -> void:
+	"""Double the time window and find the next waypoint within that window"""
+	if not recorder:
+		return
+	
+	var recorded_inputs = recorder.get_recorded_inputs()
+	var current_time = recorder.get_playback_time()
+	var new_dT = correction_duration * 2.0
+	var target_time = current_time + new_dT
+	
+	# Find waypoint closest to but no later than target_time
+	var best_position = {}
+	var best_time = 0.0
+	
+	for i in range(correction_waypoint_index, recorded_inputs.size()):
+		var event = recorded_inputs[i]
+		if event.has("player_position") and event.timestamp <= target_time:
+			if event.timestamp > best_time:
+				best_time = event.timestamp
+				best_position = {
+					"position": Vector2(event.player_position.x, event.player_position.y),
+					"timestamp": event.timestamp,
+					"index": i
+				}
+	
+	if best_position.is_empty():
+		print("[Playback] No waypoint found within doubled time window - navigating to last position")
+		_navigate_to_last_position()
+		return
+	
+	# Update correction parameters
+	correction_duration = new_dT
+	correction_start_time = Time.get_ticks_msec() / 1000.0
+	correction_target_position = best_position.position
+	correction_waypoint_index = best_position.index
+	
+	# Navigate to new target
+	if navigation_agent:
+		navigation_agent.target_position = best_position.position
+		is_navigating = true
+		print("[Playback] Navigating to new waypoint at (%.1f, %.1f) - new dT: %.2fs" % [
+			best_position.position.x, best_position.position.y, new_dT
+		])
+
+## Cancel playback due to position deviation (fallback)
+func _cancel_playback_due_to_deviation() -> void:
+	"""Cancel playback when position correction fails"""
+	playback_cancelled = true
+	is_in_playback_mode = false
+	is_correcting_position = false
+	
+	# Stop the recorder playback
+	if recorder:
+		recorder.stop_playback()
+	
+	# Clear all simulated inputs
+	for key in simulated_inputs.keys():
+		simulated_inputs[key] = false
+	
+	# Reset visual feedback
+	if sprite:
+		sprite.modulate = Color(1.0, 1.0, 1.0)
+	
+	# Remove position markers
+	_remove_recorded_positions_markers()
+	
+	print("[Playback] Playback cancelled due to position deviation")
+
+## Navigate to the last position in the recording as final fallback
+func _navigate_to_last_position() -> void:
+	"""Navigate to the last recorded position as final fallback"""
+	if not recorder:
+		_cancel_playback_due_to_deviation()
+		return
+	
+	var recorded_inputs = recorder.get_recorded_inputs()
+	var last_position = {}
+	
+	# Find the last recorded position
+	for i in range(recorded_inputs.size() - 1, -1, -1):
+		var event = recorded_inputs[i]
+		if event.has("player_position"):
+			last_position = {
+				"position": Vector2(event.player_position.x, event.player_position.y),
+				"timestamp": event.timestamp,
+				"index": i
+			}
+			break
+	
+	if last_position.is_empty():
+		print("[Playback] No recorded positions found - cancelling playback")
+		_cancel_playback_due_to_deviation()
+		return
+	
+	# Set up navigation to last position
+	correction_target_position = last_position.position
+	correction_waypoint_index = last_position.index
+	is_correcting_position = true
+	
+	# Set a generous time window for reaching the last position
+	correction_duration = 10.0  # 10 seconds to reach last position
+	correction_start_time = Time.get_ticks_msec() / 1000.0
+	
+	# Start navigation to the last position
+	if navigation_agent:
+		navigation_agent.target_position = last_position.position
+		is_navigating = true
+		print("[Playback] Navigating to final position at (%.1f, %.1f) - final fallback" % [
+			last_position.position.x, last_position.position.y
+		])
 
 ## Ghost-specific: Load and play most recent recording with looping
 func _ghost_load_and_play_most_recent() -> void:
@@ -1054,7 +1281,7 @@ func _ghost_load_and_play_most_recent() -> void:
 	
 	if recorder.load_from_file(recording_path):
 		print("[Ghost] Recording loaded successfully")
-		await recorder.start_playback(1.0, true)  # Position correction enabled
+		await recorder.start_playback(1.0, false)  # Position correction disabled
 	else:
 		push_error("[Ghost] Failed to load recording")
 
@@ -1078,14 +1305,17 @@ func _spawn_on_random_tile() -> void:
 		push_error("[Player] Spawn floor '%s' not found or is not a TileMapLayer" % spawn_floor_name)
 		return
 	
-	# Get all valid tiles on the spawn floor
+	# Get all valid tiles on the spawn floor (excluding barriers)
 	var valid_tiles: Array[Vector2i] = []
 	var used_cells = spawn_floor.get_used_cells()
 	
 	for tile_pos in used_cells:
 		var tile_id = spawn_floor.get_cell_source_id(tile_pos)
 		if tile_id != -1:  # Valid tile
-			valid_tiles.append(tile_pos)
+			var atlas_coords = spawn_floor.get_cell_atlas_coords(tile_pos)
+			# Skip barrier tiles (atlas coords 0,1)
+			if atlas_coords != Vector2i(0, 1):
+				valid_tiles.append(tile_pos)
 	
 	if valid_tiles.is_empty():
 		push_error("[Player] No valid tiles found on '%s' for spawn" % spawn_floor_name)
