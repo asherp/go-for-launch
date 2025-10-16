@@ -64,6 +64,8 @@ var recorded_position_markers: Array[Node2D] = []  # Visual markers for all reco
 @onready var recorder = get_node_or_null("PlayerRecorder")  # PlayerRecorder node
 
 func _ready() -> void:
+	print("[Player %s] _ready() called - is_ghost: %s" % [name, is_ghost])
+	
 	# Try to find the sprite node with either name
 	if sprite == null:
 		sprite = sprite_alt
@@ -72,13 +74,15 @@ func _ready() -> void:
 	
 	# Ghost mode setup
 	if is_ghost:
+		print("[Ghost %s] Ghost mode enabled, setting up..." % name)
 		if sprite:
 			sprite.modulate = ghost_color
+			print("[Ghost %s] Sprite color set to: %s" % [name, ghost_color])
 		# Disable auto-recording for ghosts
 		auto_record_on_start = false
 		# Ghosts don't use random spawn
 		random_spawn = false
-		print("[Ghost] Ghost player initialized")
+		print("[Ghost %s] Ghost player initialized (auto_record=%s, random_spawn=%s)" % [name, auto_record_on_start, random_spawn])
 	
 	# Random spawn for non-ghost players
 	if random_spawn and not is_ghost:
@@ -109,8 +113,8 @@ func _ready() -> void:
 			start_recording()
 			recording_elapsed_time = 0.0
 		
-		# Auto-load and play recording for ghosts
-		if is_ghost:
+		# Auto-load and play recording for ghosts (unless skip flag is set)
+		if is_ghost and not has_meta("skip_auto_load"):
 			await get_tree().create_timer(0.5).timeout  # Wait for scene to fully load
 			_ghost_load_and_play_most_recent()
 	
@@ -131,6 +135,9 @@ func _ready() -> void:
 func _input(event: InputEvent) -> void:
 	# Skip all user input for ghost players
 	if is_ghost:
+		# Debug: Verify ghost is ignoring input
+		if event is InputEventKey and event.pressed:
+			print("[Ghost %s] Ignoring keyboard input (is_ghost=%s)" % [name, is_ghost])
 		return
 	
 	# Handle recording controls
@@ -248,10 +255,12 @@ func _physics_process(delta: float) -> void:
 	
 	# Handle jump input (spacebar or simulated)
 	var jump_pressed: bool
-	if is_in_playback_mode:
+	if is_in_playback_mode or is_ghost:
+		# Ghosts and playback use simulated inputs only
 		jump_pressed = simulated_inputs.get("jump_just_pressed", false)
 		simulated_inputs["jump_just_pressed"] = false
 	else:
+		# Only real player uses keyboard
 		jump_pressed = Input.is_action_just_pressed("jump")
 	
 	if jump_pressed and not is_jumping and z_height <= ground_z + 1.0:
@@ -338,7 +347,7 @@ func _physics_process(delta: float) -> void:
 	# Ghost players can always use simulated inputs, even during position correction
 	var is_playback: bool = is_in_playback_mode and not playback_cancelled and (not is_correcting_position or is_ghost)
 	
-	# During playback, use ONLY simulated inputs (ignore real keyboard)
+	# During playback OR for ghosts, use ONLY simulated inputs (ignore real keyboard)
 	var right_just_pressed: bool
 	var left_just_pressed: bool
 	var up_just_pressed: bool
@@ -348,7 +357,8 @@ func _physics_process(delta: float) -> void:
 	var up_pressed: bool
 	var down_pressed: bool
 	
-	if is_playback:
+	if is_playback or is_ghost:
+		# Ghosts and playback use simulated inputs only
 		right_just_pressed = simulated_inputs.get("ui_right_just_pressed", false)
 		left_just_pressed = simulated_inputs.get("ui_left_just_pressed", false)
 		up_just_pressed = simulated_inputs.get("ui_up_just_pressed", false)
@@ -358,6 +368,7 @@ func _physics_process(delta: float) -> void:
 		up_pressed = simulated_inputs.get("ui_up", false)
 		down_pressed = simulated_inputs.get("ui_down", false)
 	else:
+		# Only non-ghost players use real keyboard input
 		right_just_pressed = Input.is_action_just_pressed("ui_right")
 		left_just_pressed = Input.is_action_just_pressed("ui_left")
 		up_just_pressed = Input.is_action_just_pressed("ui_up")
@@ -370,7 +381,7 @@ func _physics_process(delta: float) -> void:
 	var any_key_pressed: bool = right_pressed or left_pressed or up_pressed or down_pressed
 	
 	# Clear "just pressed" flags at the start of each frame
-	if is_playback:
+	if is_playback or is_ghost:
 		simulated_inputs["ui_right_just_pressed"] = false
 		simulated_inputs["ui_left_just_pressed"] = false
 		simulated_inputs["ui_up_just_pressed"] = false
@@ -845,7 +856,7 @@ func _on_playback_started() -> void:
 	is_in_playback_mode = true
 	playback_cancelled = false  # Reset cancellation flag
 	is_correcting_position = false  # Reset correction flag
-	print("[Player] Playback started")
+	print("[Player %s] Playback started (is_ghost=%s, is_in_playback_mode=%s)" % [name, is_ghost, is_in_playback_mode])
 	
 	# Clear any ongoing navigation
 	if is_navigating:

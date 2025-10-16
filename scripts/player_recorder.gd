@@ -274,18 +274,24 @@ func clear() -> void:
 ## @param speed: Playback speed multiplier (1.0 = normal)
 ## @param enable_position_correction: If true, force player to recorded positions when drift exceeds threshold
 func start_playback(speed: float = 1.0, enable_position_correction: bool = false) -> bool:
+	print("PlayerRecorder: start_playback() called for player: %s" % (player.name if player else "null"))
+	
 	if recorded_inputs.is_empty():
-		push_error("PlayerRecorder: No recording loaded to play back!")
+		push_error("PlayerRecorder: No recording loaded to play back! (recorded_inputs is empty)")
 		return false
 	
 	if is_recording:
 		push_error("PlayerRecorder: Cannot play back while recording!")
 		return false
 	
+	print("PlayerRecorder: Recording has %d events, positioning player..." % recorded_inputs.size())
+	
 	# Position player at the starting location from the recording
 	if not await _position_player_at_start():
 		push_error("PlayerRecorder: Failed to position player at starting location")
 		return false
+	
+	print("PlayerRecorder: Player positioned successfully, starting playback...")
 	
 	is_playing = true
 	playback_start_time = Time.get_ticks_msec() / 1000.0
@@ -300,6 +306,7 @@ func start_playback(speed: float = 1.0, enable_position_correction: bool = false
 	
 	var correction_status = " (position correction: %s)" % ("ON" if enable_position_correction else "OFF")
 	print("PlayerRecorder: Started playback at %sx speed (%d events)%s" % [speed, recorded_inputs.size(), correction_status])
+	print("PlayerRecorder: is_playing = %s" % is_playing)
 	playback_started.emit()
 	return true
 
@@ -407,10 +414,17 @@ func stop_playback() -> void:
 func _update_playback(_delta: float) -> void:
 	if current_playback_index >= recorded_inputs.size():
 		# Playback finished
+		print("PlayerRecorder: Playback finished (reached end of %d events)" % recorded_inputs.size())
 		stop_playback()
 		return
 	
 	var current_time = (Time.get_ticks_msec() / 1000.0 - playback_start_time) * playback_speed
+	
+	# Debug: Print occasionally to verify playback is running
+	if current_playback_index == 0 or (current_playback_index % 5 == 0 and current_playback_index < 20):
+		print("PlayerRecorder [%s]: Playback update - index %d/%d, time %.2f" % [
+			player.name if player else "?", current_playback_index, recorded_inputs.size(), current_time
+		])
 	
 	# Process all events that should have happened by now
 	while current_playback_index < recorded_inputs.size():
