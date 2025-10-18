@@ -420,11 +420,11 @@ func _update_playback(_delta: float) -> void:
 	
 	var current_time = (Time.get_ticks_msec() / 1000.0 - playback_start_time) * playback_speed
 	
-	# Debug: Print occasionally to verify playback is running
-	if current_playback_index == 0 or (current_playback_index % 5 == 0 and current_playback_index < 20):
-		print("PlayerRecorder [%s]: Playback update - index %d/%d, time %.2f" % [
-			player.name if player else "?", current_playback_index, recorded_inputs.size(), current_time
-		])
+	# Debug: Print occasionally to verify playback is running (disabled for cleaner output)
+	# if current_playback_index == 0 or (current_playback_index % 5 == 0 and current_playback_index < 20):
+	#	print("PlayerRecorder [%s]: Playback update - index %d/%d, time %.2f" % [
+	#		player.name if player else "?", current_playback_index, recorded_inputs.size(), current_time
+	#	])
 	
 	# Process all events that should have happened by now
 	while current_playback_index < recorded_inputs.size():

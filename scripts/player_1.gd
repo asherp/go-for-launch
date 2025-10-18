@@ -16,10 +16,10 @@ const jump_duration := 0.6  # Time to complete full jump (up and down)
 const ground_height := 0.0  # Default ground level
 const floor_height := 16.0  # Height of one floor (tile height)
 
-# Ghost mode settings
-@export var is_ghost := false  # If true, disables user input and auto-loads recordings
-@export var ghost_color := Color(0.5, 0.5, 1.0, 0.6)  # Color for ghost players
-@export var loop_playback := true  # Whether ghost should loop playback
+# NPC mode settings
+@export var is_npc := false  # If true, disables user input and auto-loads recordings
+@export var npc_color := Color(0.5, 0.5, 1.0, 0.6)  # Color for NPC players
+@export var loop_playback := true  # Whether NPC should loop playback
 
 # Spawn settings
 @export var random_spawn := true  # If true, spawn on random tile on GroundFloor
@@ -64,7 +64,7 @@ var recorded_position_markers: Array[Node2D] = []  # Visual markers for all reco
 @onready var recorder = get_node_or_null("PlayerRecorder")  # PlayerRecorder node
 
 func _ready() -> void:
-	print("[Player %s] _ready() called - is_ghost: %s" % [name, is_ghost])
+	print("[Player %s] _ready() called - is_npc: %s" % [name, is_npc])
 	
 	# Try to find the sprite node with either name
 	if sprite == null:
@@ -72,20 +72,20 @@ func _ready() -> void:
 	if sprite == null:
 		push_warning("No Sprite2D child found! Jump visual won't work.")
 	
-	# Ghost mode setup
-	if is_ghost:
-		print("[Ghost %s] Ghost mode enabled, setting up..." % name)
+	# NPC mode setup
+	if is_npc:
+		print("[NPC %s] NPC mode enabled, setting up..." % name)
 		if sprite:
-			sprite.modulate = ghost_color
-			print("[Ghost %s] Sprite color set to: %s" % [name, ghost_color])
-		# Disable auto-recording for ghosts
+			sprite.modulate = npc_color
+			print("[NPC %s] Sprite color set to: %s" % [name, npc_color])
+		# Disable auto-recording for NPCs
 		auto_record_on_start = false
-		# Ghosts don't use random spawn
+		# NPCs don't use random spawn
 		random_spawn = false
-		print("[Ghost %s] Ghost player initialized (auto_record=%s, random_spawn=%s)" % [name, auto_record_on_start, random_spawn])
+		print("[NPC %s] NPC player initialized (auto_record=%s, random_spawn=%s)" % [name, auto_record_on_start, random_spawn])
 	
-	# Random spawn for non-ghost players
-	if random_spawn and not is_ghost:
+	# Random spawn for non-NPC players
+	if random_spawn and not is_npc:
 		_spawn_on_random_tile()
 	
 	# Setup navigation agent
@@ -107,16 +107,16 @@ func _ready() -> void:
 		recorder.playback_input.connect(_on_playback_input)
 		recorder.position_deviation.connect(_on_position_deviation)
 		
-		# Auto-start recording if enabled (not for ghosts)
-		if auto_record_on_start and not is_ghost:
+		# Auto-start recording if enabled (not for NPCs)
+		if auto_record_on_start and not is_npc:
 			print("\n[Player] Auto-starting INPUT_ONLY recording for %.1f seconds..." % auto_record_duration)
 			start_recording()
 			recording_elapsed_time = 0.0
 		
-		# Auto-load and play recording for ghosts (unless skip flag is set)
-		if is_ghost and not has_meta("skip_auto_load"):
+		# Auto-load and play recording for NPCs (unless skip flag is set)
+		if is_npc and not has_meta("skip_auto_load"):
 			await get_tree().create_timer(0.5).timeout  # Wait for scene to fully load
-			_ghost_load_and_play_most_recent()
+			_npc_load_and_play_most_recent()
 	
 	# Initialize simulated inputs
 	simulated_inputs = {
@@ -133,11 +133,11 @@ func _ready() -> void:
 	update_z_index()
 
 func _input(event: InputEvent) -> void:
-	# Skip all user input for ghost players
-	if is_ghost:
-		# Debug: Verify ghost is ignoring input
-		if event is InputEventKey and event.pressed:
-			print("[Ghost %s] Ignoring keyboard input (is_ghost=%s)" % [name, is_ghost])
+	# Skip all user input for NPC players
+	if is_npc:
+		# Debug: Verify NPC is ignoring input (disabled for cleaner output)
+		# if event is InputEventKey and event.pressed:
+		#	print("[NPC %s] Ignoring keyboard input (is_npc=%s)" % [name, is_npc])
 		return
 	
 	# Handle recording controls
@@ -255,8 +255,8 @@ func _physics_process(delta: float) -> void:
 	
 	# Handle jump input (spacebar or simulated)
 	var jump_pressed: bool
-	if is_in_playback_mode or is_ghost:
-		# Ghosts and playback use simulated inputs only
+	if is_in_playback_mode or is_npc:
+		# NPCs and playback use simulated inputs only
 		jump_pressed = simulated_inputs.get("jump_just_pressed", false)
 		simulated_inputs["jump_just_pressed"] = false
 	else:
@@ -344,10 +344,10 @@ func _physics_process(delta: float) -> void:
 	_update_position_correction()
 	
 	# Check for manual input (keyboard) or simulated input during playback
-	# Ghost players can always use simulated inputs, even during position correction
-	var is_playback: bool = is_in_playback_mode and not playback_cancelled and (not is_correcting_position or is_ghost)
+	# NPC players can always use simulated inputs, even during position correction
+	var is_playback: bool = is_in_playback_mode and not playback_cancelled and (not is_correcting_position or is_npc)
 	
-	# During playback OR for ghosts, use ONLY simulated inputs (ignore real keyboard)
+	# During playback OR for NPCs, use ONLY simulated inputs (ignore real keyboard)
 	var right_just_pressed: bool
 	var left_just_pressed: bool
 	var up_just_pressed: bool
@@ -357,8 +357,8 @@ func _physics_process(delta: float) -> void:
 	var up_pressed: bool
 	var down_pressed: bool
 	
-	if is_playback or is_ghost:
-		# Ghosts and playback use simulated inputs only
+	if is_playback or is_npc:
+		# NPCs and playback use simulated inputs only
 		right_just_pressed = simulated_inputs.get("ui_right_just_pressed", false)
 		left_just_pressed = simulated_inputs.get("ui_left_just_pressed", false)
 		up_just_pressed = simulated_inputs.get("ui_up_just_pressed", false)
@@ -368,7 +368,7 @@ func _physics_process(delta: float) -> void:
 		up_pressed = simulated_inputs.get("ui_up", false)
 		down_pressed = simulated_inputs.get("ui_down", false)
 	else:
-		# Only non-ghost players use real keyboard input
+		# Only non-NPC players use real keyboard input
 		right_just_pressed = Input.is_action_just_pressed("ui_right")
 		left_just_pressed = Input.is_action_just_pressed("ui_left")
 		up_just_pressed = Input.is_action_just_pressed("ui_up")
@@ -381,14 +381,14 @@ func _physics_process(delta: float) -> void:
 	var any_key_pressed: bool = right_pressed or left_pressed or up_pressed or down_pressed
 	
 	# Clear "just pressed" flags at the start of each frame
-	if is_playback or is_ghost:
+	if is_playback or is_npc:
 		simulated_inputs["ui_right_just_pressed"] = false
 		simulated_inputs["ui_left_just_pressed"] = false
 		simulated_inputs["ui_up_just_pressed"] = false
 		simulated_inputs["ui_down_just_pressed"] = false
 	
-	# Manual input cancels navigation (but not for ghost players during correction)
-	if any_key_pressed and not (is_ghost and is_correcting_position):
+	# Manual input cancels navigation (but not for NPC players during correction)
+	if any_key_pressed and not (is_npc and is_correcting_position):
 		is_navigating = false
 	
 	# Handle navigation (free movement, not restricted to diagonals)
@@ -856,7 +856,7 @@ func _on_playback_started() -> void:
 	is_in_playback_mode = true
 	playback_cancelled = false  # Reset cancellation flag
 	is_correcting_position = false  # Reset correction flag
-	print("[Player %s] Playback started (is_ghost=%s, is_in_playback_mode=%s)" % [name, is_ghost, is_in_playback_mode])
+	print("[Player %s] Playback started (is_npc=%s, is_in_playback_mode=%s)" % [name, is_npc, is_in_playback_mode])
 	
 	# Clear any ongoing navigation
 	if is_navigating:
@@ -873,9 +873,9 @@ func _on_playback_finished() -> void:
 	"""Called when playback finishes"""
 	is_in_playback_mode = false
 	
-	# Ghost mode: loop playback
-	if is_ghost and loop_playback:
-		print("[Ghost] Looping playback...")
+	# NPC mode: loop playback
+	if is_npc and loop_playback:
+		print("[NPC] Looping playback...")
 		await get_tree().create_timer(0.5).timeout
 		await recorder.start_playback(1.0, false)
 		return
@@ -891,8 +891,8 @@ func _on_playback_finished() -> void:
 	else:
 		print("[Player] Playback finished")
 	
-	# Reset visual feedback (not for ghosts - keep their color)
-	if sprite and not is_ghost:
+	# Reset visual feedback (not for NPCs - keep their color)
+	if sprite and not is_npc:
 		sprite.modulate = Color(1.0, 1.0, 1.0)  # Normal color
 	
 	# Remove recorded position markers
@@ -1276,25 +1276,25 @@ func _navigate_to_last_position() -> void:
 			last_position.position.x, last_position.position.y
 		])
 
-## Ghost-specific: Load and play most recent recording with looping
-func _ghost_load_and_play_most_recent() -> void:
-	"""Load the most recent recording and start playing it (ghost mode only)"""
-	if not is_ghost:
+## NPC-specific: Load and play most recent recording with looping
+func _npc_load_and_play_most_recent() -> void:
+	"""Load the most recent recording and start playing it (NPC mode only)"""
+	if not is_npc:
 		return
 	
 	var recording_path = get_most_recent_recording()
 	
 	if recording_path.is_empty():
-		push_warning("[Ghost] No recordings found in res://recordings/")
+		push_warning("[NPC] No recordings found in res://recordings/")
 		return
 	
-	print("[Ghost] Loading most recent recording: ", recording_path)
+	print("[NPC] Loading most recent recording: ", recording_path)
 	
 	if recorder.load_from_file(recording_path):
-		print("[Ghost] Recording loaded successfully")
+		print("[NPC] Recording loaded successfully")
 		await recorder.start_playback(1.0, false)  # Position correction disabled
 	else:
-		push_error("[Ghost] Failed to load recording")
+		push_error("[NPC] Failed to load recording")
 
 ## Spawn player on a random tile on the specified floor
 func _spawn_on_random_tile() -> void:

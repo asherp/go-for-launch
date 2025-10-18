@@ -8,7 +8,7 @@
 [ext_resource type="Script" uid="uid://cfy08vjqx65dh" path="res://scripts/player_recorder.gd" id="5_recorder"]
 [ext_resource type="Script" uid="uid://bmnl7dtkpdrcq" path="res://scripts/countdown_timer.gd" id="6_timer"]
 [ext_resource type="Script" uid="uid://yb6p1xs55nb5" path="res://scripts/moveable_polygon.gd" id="7_polygon"]
-[ext_resource type="Script" uid="uid://de6ijmd1jc48j" path="res://scripts/ghost_manager.gd" id="8_ghost_manager"]
+[ext_resource type="Script" uid="uid://de6ijmd1jc48j" path="res://scripts/npc_manager.gd" id="8_npc_manager"]
 
 [sub_resource type="NavigationPolygon" id="NavigationPolygon_vfr8r"]
 vertices = PackedVector2Array(16, 0, 0, 8, -16, 0, 0, -8)
@@ -90,13 +90,12 @@ script = ExtResource("7_polygon")
 
 [node name="Polygon2D" type="Polygon2D" parent="GroundFloor/MoveablePolygon"]
 color = Color(0.23473272, 0.2664721, 0.18236038, 0.8)
-polygon = PackedVector2Array(12, -17, -17, -2, 10, 11, 43, -3)
+polygon = PackedVector2Array(-4, -9, -17, -2, -3, 5, 10, -2)
 
 [node name="CollisionPolygon2D" type="CollisionPolygon2D" parent="GroundFloor/MoveablePolygon"]
-visible = false
 position = Vector2(-22, 14.635662)
 scale = Vector2(1.9166666, 2.2095587)
-polygon = PackedVector2Array(17.217392, -13.865062, 4.173916, -7.5289536, 17.217392, -1.6454258, 33.39131, -7.5289536)
+polygon = PackedVector2Array(9.913044, -10.697008, 2.608696, -7.5289536, 9.391304, -4.360901, 16.695656, -7.5289536)
 
 [node name="CharacterBody2D" type="CharacterBody2D" parent="GroundFloor" groups=["player"]]
 z_index = 1
@@ -134,8 +133,8 @@ tile_map_data = PackedByteArray("AAAAAAAAAAAEAAAAAAABAAAAAAAEAAAAAAACAP//AAAEAAA
 tile_set = SubResource("TileSet_imdxm")
 script = ExtResource("2_58t6w")
 
-[node name="GhostManager" type="Node2D" parent="."]
-script = ExtResource("8_ghost_manager")
+[node name="NPCManager" type="Node2D" parent="."]
+script = ExtResource("8_npc_manager")
 
 [node name="SecondFloor" type="TileMapLayer" parent="."]
 z_index = 2
