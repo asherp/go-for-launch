@@ -1,7 +1,7 @@
 extends Label
 
 # Countdown timer configuration
-@export var start_time: float = 60.0
+@export var start_time: float = 30.0
 @export var font_size: int = 32
 
 var time_remaining: float = 0.0
@@ -30,6 +30,7 @@ func _process(delta):
 		if time_remaining <= 0:
 			time_remaining = 0
 			is_running = false
+			print("[CountdownTimer] Timer finished! Emitting signal...")
 			timer_finished.emit()
 		
 		update_display()
@@ -43,7 +44,7 @@ func update_display():
 	# Color changes based on time remaining
 	if time_remaining <= 10:
 		add_theme_color_override("font_color", Color.RED)
-	elif time_remaining <= 30:
+	elif time_remaining <= 20:
 		add_theme_color_override("font_color", Color.YELLOW)
 	else:
 		add_theme_color_override("font_color", Color.WHITE)
@@ -54,6 +55,7 @@ func reset_timer():
 	time_remaining = start_time
 	is_running = true
 	update_display()
+	print("[CountdownTimer] Timer reset to %.1f seconds" % start_time)
 
 func pause_timer():
 	is_running = false

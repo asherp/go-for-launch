@@ -3,7 +3,11 @@ extends Node2D
 ## NPC Manager - Spawns multiple npc players based on available recordings
 ## This script automatically discovers all recording files and creates a npc for each one
 
+const CharacterNames = preload("res://scripts/character_names.gd")
+
 signal all_npcs_started_playback
+
+# Character names are now loaded from character_names.txt via CharacterNames utility class
 
 func get_player_number_from_filename(filename: String) -> int:
 	"""Extract player number from filename like 'player_1.json'"""
@@ -14,6 +18,12 @@ func get_player_number_from_filename(filename: String) -> int:
 			return number_part.to_int()
 	# Invalid format, return 0 to sort first
 	return 0
+
+func get_character_name_from_filename(filename: String) -> String:
+	"""Extract character name from filename like 'marty_mcfly.json' or 'player_1.json'"""
+	var result = CharacterNames.from_filename(filename)
+	print("[NPCManager] Processing filename: %s -> character name: %s" % [filename, result])
+	return result
 
 # NPC player scene template (we'll duplicate the existing npc)
 @export var npc_scene_path: String = "res://scenes/launch_blocks.tscn"
@@ -53,11 +63,26 @@ func spawn_all_npcs() -> void:
 		print("[NPCManager] No recordings found in %s" % recordings_directory)
 		return
 	
+	# Check if player is spawning as a specific character
+	var global_data = get_node_or_null("/root/GlobalData")
+	var player_character_name = ""
+	if global_data and global_data.has_meta("spawn_as_character"):
+		var character_data = global_data.get_meta("spawn_as_character")
+		player_character_name = character_data.get("recording_name", "")
+		print("[NPCManager] Player is playing as: %s - will skip spawning this NPC" % player_character_name)
+	
 	print("[NPCManager] Found %d recordings, spawning npcs..." % recording_files.size())
 	
-	# First, spawn all NPCs without starting playback
+	# First, spawn all NPCs without starting playback (except the one player is playing as)
 	for i in range(recording_files.size()):
 		var recording_path = recording_files[i]
+		var recording_name = recording_path.get_file().get_basename()
+		
+		# Skip spawning the NPC that the player is playing as
+		if player_character_name != "" and recording_name == player_character_name:
+			print("[NPCManager] Skipping spawn for %s (player is playing as this character)" % recording_name)
+			continue
+		
 		var npc = await spawn_npc_for_recording(recording_path, i)
 		if npc:
 			spawned_npcs.append(npc)
@@ -86,7 +111,7 @@ func get_all_recording_files() -> Array[String]:
 	var file_name = dir.get_next()
 	
 	while file_name != "":
-		if file_name.ends_with(".json") and file_name.begins_with("player_"):
+		if file_name.ends_with(".json"):
 			var full_path = recordings_directory + "/" + file_name
 			var modified_time = FileAccess.get_modified_time(full_path)
 			file_data.append({
@@ -99,8 +124,8 @@ func get_all_recording_files() -> Array[String]:
 	
 	dir.list_dir_end()
 	
-	# Sort by player number for consistent ordering across sessions
-	file_data.sort_custom(func(a, b): return get_player_number_from_filename(a.name) < get_player_number_from_filename(b.name))
+	# Sort by character name for consistent ordering across sessions
+	file_data.sort_custom(func(a, b): return get_character_name_from_filename(a.name) < get_character_name_from_filename(b.name))
 	
 	# Extract just the paths
 	for data in file_data:
@@ -274,9 +299,10 @@ func create_npc_player(npc_index: int, start_position: Vector2, recording_path: 
 	
 	# Create the main CharacterBody2D
 	var npc = CharacterBody2D.new()
-	# Use player number for consistent naming across sessions
-	var player_number = get_player_number_from_filename(recording_path.get_file())
-	npc.name = "player_%d" % player_number
+	# Use character name for consistent naming across sessions
+	var character_name = get_character_name_from_filename(recording_path.get_file())
+	npc.name = character_name
+	print("[NPCManager] Created NPC with name: %s" % character_name)
 	npc.z_index = 2  # Higher z_index to ensure visibility
 	npc.add_to_group("npc")
 	
@@ -407,7 +433,7 @@ func setup_npc_for_recording(npc: Node, recording_path: String, npc_index: int, 
 			# Start playback only if requested
 			if start_playback_immediately and npc.has_method("start_playback"):
 				print("[NPCManager] Starting playback for npc %d..." % (npc_index + 1))
-				var playback_started = await npc.start_playback(1.0, false)  # Position correction disabled for multiple npcs
+				var playback_started = await npc.start_playback(1.0, true)  # Position correction enabled for NPCs
 				if playback_started:
 					print("[NPCManager] NPC %d playback started successfully!" % (npc_index + 1))
 				else:
@@ -427,7 +453,7 @@ func start_all_recordings() -> void:
 		if npc and is_instance_valid(npc) and npc.has_method("start_playback"):
 			print("[NPCManager] Starting playback for NPC %d..." % (i + 1))
 			# Don't await - start all simultaneously
-			npc.start_playback(1.0, false)  # Position correction disabled for multiple npcs
+			npc.start_playback(1.0, true)  # Position correction enabled for NPCs
 	
 	print("[NPCManager] All recordings started simultaneously!")
 	

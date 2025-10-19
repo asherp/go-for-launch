@@ -1,0 +1,15 @@
+# Recordings Directory
+
+This directory stores player input recordings in JSON format.
+
+Files are automatically saved here with timestamps:
+- player_recording_YYYYMMDD_HHMMSS.json
+
+These files are small (typically 5-10 KB per minute) and can be:
+- Analyzed for player behavior
+- Used for speedrun verification
+- Replayed for testing
+- Shared with others
+
+Note: You may want to add `*.json` to .gitignore if you don't want to commit recordings.
+

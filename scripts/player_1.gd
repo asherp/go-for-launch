@@ -1,5 +1,7 @@
 extends CharacterBody2D
 
+const CharacterNames = preload("res://scripts/character_names.gd")
+
 const max_speed := 40.0
 const min_speed := 8.0
 const time_to_max_speed := 0.1
@@ -39,7 +41,7 @@ var last_logged_next_tile := Vector2i(-999, -999)  # Track last logged next tile
 
 # Recording settings
 var auto_record_on_start := true  # Automatically start recording when game starts
-var auto_record_duration := 60.0  # Duration to record in seconds (0 = infinite)
+var auto_record_duration := 30.0  # Duration to record in seconds (0 = infinite)
 var recording_elapsed_time := 0.0  # Time elapsed since recording started
 var manually_stopped_recording := false  # Flag to prevent auto-save after manual stop
 
@@ -62,6 +64,9 @@ var followed_npc: Node = null  # Reference to the NPC being followed
 var follow_update_timer := 0.0  # Timer for updating follow target
 var follow_update_interval := 1.0  # Update target position every second
 var follow_distance := 20.0  # Distance to maintain from the followed NPC
+var is_playing_as_character := false  # True when playing as a selected character until interrupted
+
+# Character names are now loaded from character_names.txt via CharacterNames utility class
 
 # Playback visualization
 var recorded_position_markers: Array[Node2D] = []  # Visual markers for all recorded positions
@@ -81,9 +86,15 @@ func _ready() -> void:
 	
 	# Set proper player name for main player (not NPCs)
 	if not is_npc:
-		var player_number = get_next_player_number()
-		name = "player_%d" % player_number
-		print("[Player] Set player name to: %s" % name)
+		# Check if we should spawn as a specific character
+		var global_data = get_node_or_null("/root/GlobalData")
+		if global_data and global_data.has_meta("spawn_as_character"):
+			var character_data = global_data.get_meta("spawn_as_character")
+			_spawn_as_character(character_data)
+		else:
+			var character_name = get_next_character_name()
+			name = character_name
+			print("[Player] Set player name to: %s" % name)
 	
 	# NPC mode setup
 	if is_npc:
@@ -141,11 +152,32 @@ func _ready() -> void:
 	
 	# Set initial z_index based on current floor
 	update_z_index()
+	
+	# Connect to countdown timer if it exists
+	var countdown_timer = get_node_or_null("../CanvasLayer/MarginContainer/CountdownTimer")
+	if countdown_timer and countdown_timer.has_signal("timer_finished"):
+		countdown_timer.timer_finished.connect(_on_timer_finished)
+		print("[Player] Connected to countdown timer")
+	else:
+		print("[Player] WARNING: Could not find or connect to countdown timer")
 
 func _input(event: InputEvent) -> void:
 	# Skip all user input for NPC players - only main player should respond to clicks
 	if is_npc:
 		return
+	
+	# Check if we're in character takeover mode and user is providing input
+	if is_playing_as_character and _is_user_input(event):
+		print("[Player] User input detected - switching from playback to live control")
+		# Stop playback and switch to live control
+		if recorder and recorder.is_playing_back():
+			recorder.stop_playback()
+		is_playing_as_character = false
+		# Disable position correction for live control
+		if recorder:
+			recorder.position_correction_enabled = false
+		print("[Player] Position correction disabled for live control")
+		# Continue processing the input normally
 	
 	# Handle recording controls
 	if event is InputEventKey and event.pressed:
@@ -158,6 +190,7 @@ func _input(event: InputEvent) -> void:
 		
 		# S key - save recording to file
 		if event.keycode == KEY_S and event.ctrl_pressed and recorder:
+			print("[Player] Ctrl+S pressed - manually_stopped_recording: %s, is_recording: %s" % [manually_stopped_recording, recorder.is_recording])
 			save_recording_to_file()
 		
 		# L key - load and play recording
@@ -286,8 +319,8 @@ func _physics_process(delta: float) -> void:
 	
 	# Handle jump input (spacebar or simulated)
 	var jump_pressed: bool
-	if is_in_playback_mode or is_npc:
-		# NPCs and playback use simulated inputs only
+	if is_in_playback_mode or is_npc or is_playing_as_character:
+		# NPCs, playback, and character takeover use simulated inputs only
 		jump_pressed = simulated_inputs.get("jump_just_pressed", false)
 		simulated_inputs["jump_just_pressed"] = false
 	else:
@@ -386,7 +419,8 @@ func _physics_process(delta: float) -> void:
 	var is_playback: bool = is_in_playback_mode and not playback_cancelled and (not is_correcting_position or is_npc)
 	
 	# NPCs should always use playback inputs, but following takes priority for navigation
-	var should_use_playback_inputs = is_playback or is_npc
+	# Also use playback inputs when in character takeover mode
+	var should_use_playback_inputs = is_playback or is_npc or is_playing_as_character
 	
 	# During playback OR for NPCs, use ONLY simulated inputs (ignore real keyboard)
 	var right_just_pressed: bool
@@ -875,19 +909,32 @@ func save_recording_to_file(file_path: String = "") -> void:
 		push_warning("[Player] No PlayerRecorder node found!")
 		return
 	
+	print("[Player] save_recording_to_file called - manually_stopped_recording: %s, is_recording: %s, event_count: %d" % [
+		manually_stopped_recording, recorder.is_recording, recorder.get_recording().size()
+	])
+	
 	if file_path.is_empty():
 		# Ensure recordings directory exists
 		var recordings_dir = "res://recordings"
 		if not DirAccess.dir_exists_absolute(recordings_dir):
 			DirAccess.make_dir_absolute(recordings_dir)
 		
-		# Generate filename based on player number
-		var player_number = get_next_player_number()
-		file_path = "res://recordings/player_%d.json" % player_number
+		# Check if we're playing as an existing character
+		var global_data = get_node_or_null("/root/GlobalData")
+		var is_playing_as_existing_character = global_data and global_data.has_meta("spawn_as_character")
 		
-		# Update player name to match the filename
-		name = "player_%d" % player_number
-		print("[Player] Updated player name to: %s" % name)
+		if is_playing_as_existing_character:
+			# Use the original recording path to overwrite the existing file
+			var character_data = global_data.get_meta("spawn_as_character")
+			file_path = character_data.get("recording_path", "")
+			print("[Player] Overwriting existing character recording: %s" % file_path)
+		else:
+			# Generate new filename for new players using character name
+			var character_name = get_next_character_name()
+			# Character name is already in lowercase_underscore format
+			file_path = "res://recordings/%s.json" % character_name
+			name = character_name
+			print("[Player] Creating new character recording: %s" % file_path)
 	
 	if recorder.save_to_file(file_path):
 		print("[Player] Recording saved to: ", file_path)
@@ -975,7 +1022,7 @@ func _on_playback_finished() -> void:
 	if is_npc and loop_playback:
 		print("[NPC] Looping playback...")
 		await get_tree().create_timer(0.5).timeout
-		await recorder.start_playback(1.0, false)
+		await recorder.start_playback(1.0, true)  # Position correction enabled for NPCs
 		return
 	
 	# Print accuracy statistics
@@ -1147,6 +1194,40 @@ func get_next_player_number() -> int:
 	dir.list_dir_end()
 	
 	return max_number + 1
+
+func get_next_character_name() -> String:
+	"""Get the next available character name for recording"""
+	var recordings_dir = "res://recordings"
+	var dir = DirAccess.open(recordings_dir)
+	var used_names: Array[String] = []
+	
+	if not dir:
+		return CharacterNames.get_character_names()[0]  # Return first name if no recordings directory
+	
+	# Collect all used character names from existing recordings
+	dir.list_dir_begin()
+	var file_name = dir.get_next()
+	
+	while file_name != "":
+		if file_name.ends_with(".json"):
+			var file_path = recordings_dir + "/" + file_name
+			var file = FileAccess.open(file_path, FileAccess.READ)
+			if file:
+				var json_string = file.get_as_text()
+				file.close()
+				
+				var json = JSON.new()
+				if json.parse(json_string) == OK:
+					var data = json.data
+					if data.has("player_name"):
+						used_names.append(data.player_name)
+		
+		file_name = dir.get_next()
+	
+	dir.list_dir_end()
+	
+	# Use CharacterNames utility to get next available name
+	return CharacterNames.get_next_character_name(used_names)
 
 ## Called when position deviation is detected during playback
 func _on_position_deviation(actual: Vector2, expected: Vector2, deviation: float) -> void:
@@ -1497,9 +1578,40 @@ func _npc_load_and_play_most_recent() -> void:
 	
 	if recorder.load_from_file(recording_path):
 		print("[NPC] Recording loaded successfully")
-		await recorder.start_playback(1.0, false)  # Position correction disabled
+		await recorder.start_playback(1.0, true)  # Position correction enabled for NPCs
 	else:
 		push_error("[NPC] Failed to load recording")
+
+func _spawn_as_character(character_data: Dictionary) -> void:
+	"""Spawn the player as a specific character from recording data"""
+	var character_info = character_data.get("character_info", {})
+	var recording_name = character_data.get("recording_name", "Unknown")
+	var player_number = character_data.get("player_number", 0)
+	
+	# Set player name to match the character
+	name = character_info.get("player_name", "player_%d" % player_number)
+	print("[Player] Spawning as character: %s" % name)
+	
+	# Set position to the character's start position
+	var start_position = character_info.get("start_position", Vector2.ZERO)
+	if start_position != Vector2.ZERO:
+		position = start_position
+		print("[Player] Set position to character's start position: %s" % start_position)
+	
+	# Load the character's recording for playback
+	var recording_path = character_data.get("recording_path", "")
+	if recording_path != "" and recorder:
+		print("[Player] Loading character's recording: %s" % recording_path)
+		# Load the recording but don't start playback yet
+		recorder.load_from_file(recording_path)
+		
+		# Start playback after a short delay to ensure everything is set up
+		await get_tree().create_timer(0.5).timeout
+		start_playback(1.0, true)  # Start playback with position correction enabled
+		
+		# Set flag to indicate we're in character takeover mode
+		is_playing_as_character = true
+		print("[Player] Started character takeover mode - recording will play until you provide input")
 
 ## Spawn player on a random tile on the specified floor
 func _spawn_on_random_tile() -> void:
@@ -1677,13 +1789,20 @@ func _update_npc_following(delta: float) -> void:
 	elif any_key_pressed:
 		# We're using keyboard input - pause following but keep it active
 		pass
+	
+	# Update indicator position to follow the target NPC
+	var indicator_name = "PlayerFollowIndicator" if not is_npc else "NPCFollowIndicator"
+	var indicator = get_node_or_null(indicator_name)
+	if indicator and followed_npc and is_instance_valid(followed_npc):
+		# Position the indicator above the target NPC
+		indicator.global_position = followed_npc.global_position + Vector2(0, -20)
 
 func _add_follow_indicator(npc: Node) -> void:
 	"""Add visual indicator to show which NPC is being followed"""
-	# Remove any existing indicator from any NPC
-	_remove_all_follow_indicators()
+	# Remove any existing indicator from this player
+	_remove_follow_indicator()
 	
-	# Create a simple circle indicator above the NPC
+	# Create a simple circle indicator that follows the target NPC
 	var indicator = Node2D.new()
 	
 	# Different indicator names and colors for player vs NPC following
@@ -1720,29 +1839,26 @@ func _add_follow_indicator(npc: Node) -> void:
 		indicator.add_child(circle)
 		indicator.position = Vector2(0, -20)  # Above the NPC
 	
-	# Add to the NPC
-	npc.add_child(indicator)
+	# Add indicator to this player (not the NPC) so only this player can see it
+	add_child(indicator)
+	
+	# Set initial position above the target NPC
+	if npc and is_instance_valid(npc):
+		indicator.global_position = npc.global_position + Vector2(0, -20)
 
 func _remove_follow_indicator() -> void:
-	"""Remove the follow indicator from the currently followed NPC"""
-	if followed_npc and is_instance_valid(followed_npc):
-		var indicator_name = "PlayerFollowIndicator" if not is_npc else "NPCFollowIndicator"
-		var indicator = followed_npc.get_node_or_null(indicator_name)
-		if indicator:
-			indicator.queue_free()
+	"""Remove the follow indicator from this player"""
+	var indicator_name = "PlayerFollowIndicator" if not is_npc else "NPCFollowIndicator"
+	var indicator = get_node_or_null(indicator_name)
+	if indicator:
+		indicator.queue_free()
+		print("[Player] Removed follow indicator")
 
 func _remove_all_follow_indicators() -> void:
-	"""Remove follow indicators from all NPCs"""
-	var npcs = get_tree().get_nodes_in_group("npc")
-	for npc in npcs:
-		if npc and is_instance_valid(npc):
-			# Remove both types of indicators
-			var player_indicator = npc.get_node_or_null("PlayerFollowIndicator")
-			if player_indicator:
-				player_indicator.queue_free()
-			var npc_indicator = npc.get_node_or_null("NPCFollowIndicator")
-			if npc_indicator:
-				npc_indicator.queue_free()
+	"""Remove follow indicators from all NPCs (legacy function - now each player manages their own)"""
+	# This function is now deprecated since each player manages their own indicator
+	# But we'll keep it for compatibility and just remove this player's indicator
+	_remove_follow_indicator()
 
 func _record_npc_follow_event(npc: Node) -> void:
 	"""Record when the player starts following an NPC"""
@@ -1925,3 +2041,22 @@ func _start_recording_synchronized() -> void:
 	print("\n[Player] Auto-starting INPUT_ONLY recording for %.1f seconds..." % auto_record_duration)
 	start_recording()
 	recording_elapsed_time = 0.0
+
+func _is_user_input(event: InputEvent) -> bool:
+	"""Check if the event represents meaningful user input that should interrupt playback"""
+	if event is InputEventKey and event.pressed:
+		# Any key press except recording controls
+		return event.keycode != KEY_R and not (event.keycode == KEY_S and event.ctrl_pressed) and not (event.keycode == KEY_L and event.ctrl_pressed) and not (event.keycode == KEY_P) and not (event.keycode == KEY_SPACE and event.ctrl_pressed)
+	elif event is InputEventMouseButton and event.pressed:
+		# Any mouse click
+		return true
+	elif event is InputEventMouseMotion:
+		# Mouse movement (optional - you might want to exclude this)
+		return false
+	return false
+
+func _on_timer_finished() -> void:
+	"""Called when the countdown timer reaches zero"""
+	print("[Player] Timer finished - returning to main menu")
+	# Return to main menu
+	get_tree().change_scene_to_file("res://scenes/main_menu.tscn")
