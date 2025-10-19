@@ -18,8 +18,9 @@ const floor_height := 16.0  # Height of one floor (tile height)
 
 # NPC mode settings
 @export var is_npc := false  # If true, disables user input and auto-loads recordings
-@export var npc_color := Color(0.5, 0.5, 1.0, 0.6)  # Color for NPC players
+@export var npc_color := Color(0.5, 0.5, 1.0, 1.0)  # Color for NPC players
 @export var loop_playback := true  # Whether NPC should loop playback
+@export var can_follow_others := false  # Whether this NPC can follow other NPCs
 
 # Spawn settings
 @export var random_spawn := true  # If true, spawn on random tile on GroundFloor
@@ -40,6 +41,7 @@ var last_logged_next_tile := Vector2i(-999, -999)  # Track last logged next tile
 var auto_record_on_start := true  # Automatically start recording when game starts
 var auto_record_duration := 60.0  # Duration to record in seconds (0 = infinite)
 var recording_elapsed_time := 0.0  # Time elapsed since recording started
+var manually_stopped_recording := false  # Flag to prevent auto-save after manual stop
 
 # Playback state
 var simulated_inputs: Dictionary = {}  # Store simulated input states during playback
@@ -54,6 +56,13 @@ var correction_start_time := 0.0  # When correction started
 var correction_duration := 0.0  # How long to wait before checking position
 var correction_waypoint_index := 0  # Index of the waypoint we're navigating to
 
+# NPC following system
+var is_following_npc := false  # Flag to indicate we're following an NPC
+var followed_npc: Node = null  # Reference to the NPC being followed
+var follow_update_timer := 0.0  # Timer for updating follow target
+var follow_update_interval := 1.0  # Update target position every second
+var follow_distance := 20.0  # Distance to maintain from the followed NPC
+
 # Playback visualization
 var recorded_position_markers: Array[Node2D] = []  # Visual markers for all recorded positions
 
@@ -64,25 +73,26 @@ var recorded_position_markers: Array[Node2D] = []  # Visual markers for all reco
 @onready var recorder = get_node_or_null("PlayerRecorder")  # PlayerRecorder node
 
 func _ready() -> void:
-	print("[Player %s] _ready() called - is_npc: %s" % [name, is_npc])
-	
 	# Try to find the sprite node with either name
 	if sprite == null:
 		sprite = sprite_alt
 	if sprite == null:
 		push_warning("No Sprite2D child found! Jump visual won't work.")
 	
+	# Set proper player name for main player (not NPCs)
+	if not is_npc:
+		var player_number = get_next_player_number()
+		name = "player_%d" % player_number
+		print("[Player] Set player name to: %s" % name)
+	
 	# NPC mode setup
 	if is_npc:
-		print("[NPC %s] NPC mode enabled, setting up..." % name)
 		if sprite:
 			sprite.modulate = npc_color
-			print("[NPC %s] Sprite color set to: %s" % [name, npc_color])
 		# Disable auto-recording for NPCs
 		auto_record_on_start = false
 		# NPCs don't use random spawn
 		random_spawn = false
-		print("[NPC %s] NPC player initialized (auto_record=%s, random_spawn=%s)" % [name, auto_record_on_start, random_spawn])
 	
 	# Random spawn for non-NPC players
 	if random_spawn and not is_npc:
@@ -107,11 +117,11 @@ func _ready() -> void:
 		recorder.playback_input.connect(_on_playback_input)
 		recorder.position_deviation.connect(_on_position_deviation)
 		
-		# Auto-start recording if enabled (not for NPCs)
+		# Auto-start recording if enabled (not for ghosts)
+		# But wait for NPCs to start their playback first for synchronization
 		if auto_record_on_start and not is_npc:
-			print("\n[Player] Auto-starting INPUT_ONLY recording for %.1f seconds..." % auto_record_duration)
-			start_recording()
-			recording_elapsed_time = 0.0
+			print("\n[Player] Waiting for NPCs to start, then will begin recording...")
+			_connect_to_npc_synchronization()
 		
 		# Auto-load and play recording for NPCs (unless skip flag is set)
 		if is_npc and not has_meta("skip_auto_load"):
@@ -133,11 +143,8 @@ func _ready() -> void:
 	update_z_index()
 
 func _input(event: InputEvent) -> void:
-	# Skip all user input for NPC players
+	# Skip all user input for NPC players - only main player should respond to clicks
 	if is_npc:
-		# Debug: Verify NPC is ignoring input (disabled for cleaner output)
-		# if event is InputEventKey and event.pressed:
-		#	print("[NPC %s] Ignoring keyboard input (is_npc=%s)" % [name, is_npc])
 		return
 	
 	# Handle recording controls
@@ -155,7 +162,7 @@ func _input(event: InputEvent) -> void:
 		
 		# L key - load and play recording
 		if event.keycode == KEY_L and event.ctrl_pressed and recorder:
-			load_and_play_recording()
+			load_and_play_recording("", false)  # Disable position correction
 		
 		# P key - print recording statistics
 		if event.keycode == KEY_P and recorder:
@@ -171,8 +178,23 @@ func _input(event: InputEvent) -> void:
 	# Handle mouse click for navigation
 	if event is InputEventMouseButton:
 		if event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
+			var click_position = get_global_mouse_position()
+			
+			# First check if clicking on an NPC
+			var clicked_npc = get_npc_at_position(click_position)
+			print("[Click] Clicked at position: %s" % click_position)
+			print("[Click] Found NPC: %s" % (clicked_npc.name if clicked_npc else "None"))
+			if clicked_npc and clicked_npc != self:  # Don't follow yourself
+				# Clicked on an NPC - start following it
+				print("[Click] Starting to follow NPC: %s" % clicked_npc.name)
+				follow_npc(clicked_npc)
+				return
+			else:
+				print("[Click] No NPC found or clicked self, proceeding with normal navigation")
+			
+			# Not clicking on NPC - normal navigation
 			if navigation_agent:
-				var target_position = get_global_mouse_position()
+				var target_position = click_position
 				var current_floor = get_parent()
 				
 				# Convert to tile coordinates using tilemap's coordinate system
@@ -189,6 +211,11 @@ func _input(event: InputEvent) -> void:
 				
 				navigation_agent.target_position = target_position
 				is_navigating = true
+				
+				# Stop following NPC if we click elsewhere
+				if is_following_npc:
+					_remove_follow_indicator()  # Remove indicator first
+					stop_following_npc()
 				
 				# Debug: print tiles in all four directions with floor transitions
 				print("\n[Click] Target tile: ", navigation_target_tile)
@@ -208,6 +235,10 @@ func _physics_process(delta: float) -> void:
 			stop_recording()
 			# Auto-save the recording
 			save_recording_to_file()
+	
+	# Reset manual stop flag after a frame to prevent race conditions
+	if manually_stopped_recording and not recorder.is_recording:
+		manually_stopped_recording = false
 	
 	# Get tilemap to check ground height and if player should fall
 	var tilemap = get_parent()
@@ -333,6 +364,10 @@ func _physics_process(delta: float) -> void:
 	# Update tile highlight
 	update_tile_highlight()
 	
+	# Update path markers during playback to show only next 3 seconds
+	if is_in_playback_mode and recorder:
+		_update_path_markers()
+	
 	# Handle horizontal movement (4-directional diagonal only, Pac-Man style)
 	# Define the 4 isometric diagonal directions (32x16 tiles = 2:1 ratio)
 	var northeast := Vector2(2, -1).normalized()  # Up-right on screen
@@ -343,9 +378,15 @@ func _physics_process(delta: float) -> void:
 	# Update position correction system
 	_update_position_correction()
 	
+	# Update NPC following system
+	_update_npc_following(delta)
+	
 	# Check for manual input (keyboard) or simulated input during playback
 	# NPC players can always use simulated inputs, even during position correction
 	var is_playback: bool = is_in_playback_mode and not playback_cancelled and (not is_correcting_position or is_npc)
+	
+	# NPCs should always use playback inputs, but following takes priority for navigation
+	var should_use_playback_inputs = is_playback or is_npc
 	
 	# During playback OR for NPCs, use ONLY simulated inputs (ignore real keyboard)
 	var right_just_pressed: bool
@@ -357,7 +398,7 @@ func _physics_process(delta: float) -> void:
 	var up_pressed: bool
 	var down_pressed: bool
 	
-	if is_playback or is_npc:
+	if should_use_playback_inputs:
 		# NPCs and playback use simulated inputs only
 		right_just_pressed = simulated_inputs.get("ui_right_just_pressed", false)
 		left_just_pressed = simulated_inputs.get("ui_left_just_pressed", false)
@@ -368,7 +409,7 @@ func _physics_process(delta: float) -> void:
 		up_pressed = simulated_inputs.get("ui_up", false)
 		down_pressed = simulated_inputs.get("ui_down", false)
 	else:
-		# Only non-NPC players use real keyboard input
+		# Only non-ghost players use real keyboard input
 		right_just_pressed = Input.is_action_just_pressed("ui_right")
 		left_just_pressed = Input.is_action_just_pressed("ui_left")
 		up_just_pressed = Input.is_action_just_pressed("ui_up")
@@ -388,18 +429,32 @@ func _physics_process(delta: float) -> void:
 		simulated_inputs["ui_down_just_pressed"] = false
 	
 	# Manual input cancels navigation (but not for NPC players during correction)
+	# For NPCs following others, keyboard input temporarily pauses following but doesn't cancel it
 	if any_key_pressed and not (is_npc and is_correcting_position):
-		is_navigating = false
+		if not (is_npc and is_following_npc):
+			is_navigating = false
+		else:
+			# NPC is following - temporarily pause following during keyboard input
+			# The following will resume when keyboard input stops
+			pass
 	
 	# Handle navigation (free movement, not restricted to diagonals)
+	# For NPCs following others, only navigate if not using keyboard input
 	if is_navigating and navigation_agent and not navigation_agent.is_navigation_finished():
-		var next_position = navigation_agent.get_next_path_position()
-		var direction_to_target = (next_position - global_position).normalized()
+		var should_navigate = true
 		
-		# Move freely toward target (no diagonal restriction during navigation)
-		current_direction = direction_to_target
-	elif is_navigating:
-		# Navigation finished naturally
+		# If NPC is following and using keyboard input, pause navigation
+		if is_npc and is_following_npc and any_key_pressed:
+			should_navigate = false
+		
+		if should_navigate:
+			var next_position = navigation_agent.get_next_path_position()
+			var direction_to_target = (next_position - global_position).normalized()
+			
+			# Move freely toward target (no diagonal restriction during navigation)
+			current_direction = direction_to_target
+	elif is_navigating and not (is_npc and is_following_npc and any_key_pressed):
+		# Navigation finished naturally (but not if NPC is following and using keyboard)
 		is_navigating = false
 		current_direction = Vector2.ZERO
 	
@@ -455,25 +510,53 @@ func get_next_floor_up(current_floor: Node, root: Node) -> Node:
 	# Define floor hierarchy (order matters - bottom to top)
 	var floor_order = ["GroundFloor", "FirstFloor", "SecondFloor", "ThirdFloor"]
 	
-	var current_index = floor_order.find(current_floor.name)
+	# Handle different parent structures
+	var floor_node = current_floor
+	if current_floor is TileMapLayer and current_floor.get_parent().name in floor_order:
+		# We're in a TileMapLayer child of a floor Node2D
+		floor_node = current_floor.get_parent()
+	
+	var current_index = floor_order.find(floor_node.name)
 	if current_index == -1 or current_index >= floor_order.size() - 1:
 		return null  # No next floor
 	
 	# Get next floor name and find it in the scene
 	var next_floor_name = floor_order[current_index + 1]
-	return root.get_node_or_null(next_floor_name)
+	var next_floor = root.get_node_or_null(next_floor_name)
+	
+	# If the next floor is a Node2D with TileMapLayer children, return the TileMapLayer
+	if next_floor and not next_floor is TileMapLayer:
+		for child in next_floor.get_children():
+			if child is TileMapLayer:
+				return child
+	
+	return next_floor
 
 func get_next_floor_down(current_floor: Node, root: Node) -> Node:
 	# Define floor hierarchy (order matters - bottom to top)
 	var floor_order = ["GroundFloor", "FirstFloor", "SecondFloor", "ThirdFloor"]
 	
-	var current_index = floor_order.find(current_floor.name)
+	# Handle different parent structures
+	var floor_node = current_floor
+	if current_floor is TileMapLayer and current_floor.get_parent().name in floor_order:
+		# We're in a TileMapLayer child of a floor Node2D
+		floor_node = current_floor.get_parent()
+	
+	var current_index = floor_order.find(floor_node.name)
 	if current_index == -1 or current_index <= 0:
 		return null  # No floor below
 	
 	# Get floor below name and find it in the scene
 	var floor_below_name = floor_order[current_index - 1]
-	return root.get_node_or_null(floor_below_name)
+	var floor_below = root.get_node_or_null(floor_below_name)
+	
+	# If the floor below is a Node2D with TileMapLayer children, return the TileMapLayer
+	if floor_below and not floor_below is TileMapLayer:
+		for child in floor_below.get_children():
+			if child is TileMapLayer:
+				return child
+	
+	return floor_below
 
 func get_closest_diagonal(direction: Vector2, ne: Vector2, se: Vector2, sw: Vector2, nw: Vector2) -> Vector2:
 	# Find which of the 4 diagonal directions is closest to the target direction
@@ -727,10 +810,19 @@ func update_floor_collisions(active_floor: Node) -> void:
 	if not root:
 		return
 	
+	# Handle different parent structures
+	var map_root = root
+	if root.name == "GroundFloor":
+		# We're in the GroundFloor TileMapLayer, need to go up to Map
+		map_root = root.get_parent()
+	elif root is NavigationRegion2D:
+		# We're in a TileMapLayer child of NavigationRegion2D
+		map_root = root.get_parent().get_parent()
+	
 	var floor_names = ["GroundFloor", "FirstFloor", "SecondFloor", "ThirdFloor", "EmptyFloor"]
 	
 	for floor_name in floor_names:
-		var floor_node = root.get_node_or_null(floor_name)
+		var floor_node = map_root.get_node_or_null(floor_name)
 		if floor_node:
 			# Floor nodes may contain TileMapLayer children or be TileMapLayer themselves
 			if floor_node is TileMapLayer:
@@ -741,7 +833,7 @@ func update_floor_collisions(active_floor: Node) -> void:
 					floor_node.collision_enabled = false
 					floor_node.navigation_enabled = false
 			else:
-				# Check for TileMapLayer children
+				# Check for TileMapLayer children (new structure)
 				for child in floor_node.get_children():
 					if child is TileMapLayer:
 						if child == active_floor:
@@ -760,6 +852,7 @@ func start_recording() -> void:
 	if recorder:
 		recorder.start_recording()
 		recording_elapsed_time = 0.0
+		manually_stopped_recording = false  # Reset flag when starting new recording
 		print("[Player] Recording started (press R to stop)")
 	else:
 		push_warning("[Player] No PlayerRecorder node found!")
@@ -769,6 +862,10 @@ func stop_recording() -> int:
 	if recorder:
 		var event_count = recorder.stop_recording()
 		print("[Player] Recording stopped - ", event_count, " events recorded")
+		# Reset the auto-record timer when manually stopping
+		recording_elapsed_time = 0.0
+		# Set flag to prevent auto-save
+		manually_stopped_recording = true
 		return event_count
 	return 0
 
@@ -784,11 +881,13 @@ func save_recording_to_file(file_path: String = "") -> void:
 		if not DirAccess.dir_exists_absolute(recordings_dir):
 			DirAccess.make_dir_absolute(recordings_dir)
 		
-		# Generate default filename with timestamp
-		var time = Time.get_datetime_dict_from_system()
-		file_path = "res://recordings/player_recording_%04d%02d%02d_%02d%02d%02d.json" % [
-			time.year, time.month, time.day, time.hour, time.minute, time.second
-		]
+		# Generate filename based on player number
+		var player_number = get_next_player_number()
+		file_path = "res://recordings/player_%d.json" % player_number
+		
+		# Update player name to match the filename
+		name = "player_%d" % player_number
+		print("[Player] Updated player name to: %s" % name)
 	
 	if recorder.save_to_file(file_path):
 		print("[Player] Recording saved to: ", file_path)
@@ -856,7 +955,6 @@ func _on_playback_started() -> void:
 	is_in_playback_mode = true
 	playback_cancelled = false  # Reset cancellation flag
 	is_correcting_position = false  # Reset correction flag
-	print("[Player %s] Playback started (is_npc=%s, is_in_playback_mode=%s)" % [name, is_npc, is_in_playback_mode])
 	
 	# Clear any ongoing navigation
 	if is_navigating:
@@ -866,7 +964,7 @@ func _on_playback_started() -> void:
 	if sprite:
 		sprite.modulate = Color(0.7, 0.7, 1.0)  # Slight blue tint during playback
 	
-	# Create visual markers for all recorded positions
+	# Create visual markers for recorded positions (next 3 seconds)
 	_create_recorded_positions_markers()
 
 func _on_playback_finished() -> void:
@@ -934,6 +1032,13 @@ func _on_playback_input(action: String, pressed: bool, click_position: Vector2) 
 					navigation_agent.target_position = click_position
 					is_navigating = true
 					print("[Playback] Starting navigation to (%.1f, %.1f)" % [click_position.x, click_position.y])
+				
+				# Handle object interaction during playback
+				_handle_playback_object_interaction(click_position)
+		"npc_follow_start":
+			_handle_playback_npc_follow_start()
+		"npc_follow_stop":
+			_handle_playback_npc_follow_stop()
 
 ## Start playback of loaded recording
 func start_playback(speed: float = 1.0, enable_position_correction: bool = false) -> void:
@@ -1000,7 +1105,7 @@ func get_most_recent_recording() -> String:
 	var file_name = dir.get_next()
 	
 	while file_name != "":
-		if file_name.ends_with(".json") and file_name.begins_with("player_recording_"):
+		if file_name.ends_with(".json") and file_name.begins_with("player_"):
 			var full_path = recordings_dir + "/" + file_name
 			var modified_time = FileAccess.get_modified_time(full_path)
 			
@@ -1014,6 +1119,35 @@ func get_most_recent_recording() -> String:
 	
 	return latest_file
 
+func get_next_player_number() -> int:
+	"""Get the next available player number for naming"""
+	var recordings_dir = "res://recordings"
+	var dir = DirAccess.open(recordings_dir)
+	
+	if not dir:
+		return 1
+	
+	var max_number = 0
+	
+	dir.list_dir_begin()
+	var file_name = dir.get_next()
+	
+	while file_name != "":
+		if file_name.ends_with(".json") and file_name.begins_with("player_"):
+			# Extract number from filename like "player_1.json"
+			var base_name = file_name.get_basename()
+			var number_part = base_name.substr(7)  # Remove "player_" prefix
+			if number_part.is_valid_int():
+				var number = number_part.to_int()
+				if number > max_number:
+					max_number = number
+		
+		file_name = dir.get_next()
+	
+	dir.list_dir_end()
+	
+	return max_number + 1
+
 ## Called when position deviation is detected during playback
 func _on_position_deviation(actual: Vector2, expected: Vector2, deviation: float) -> void:
 	"""Check if deviation exceeds threshold and start position correction if needed"""
@@ -1024,7 +1158,7 @@ func _on_position_deviation(actual: Vector2, expected: Vector2, deviation: float
 		print("[Playback] Position deviation %.1fpx exceeds threshold %.1fpx - starting position correction" % [deviation, max_deviation_threshold])
 		_start_position_correction(expected)
 
-## Create visual markers for all recorded positions
+## Create visual markers for the next 3 recorded positions
 func _create_recorded_positions_markers() -> void:
 	if not recorder:
 		return
@@ -1035,47 +1169,74 @@ func _create_recorded_positions_markers() -> void:
 	# Clear any existing markers
 	_remove_recorded_positions_markers()
 	
-	# Get total recording duration for color calculation
-	var total_duration = recorder.get_recording_duration()
-	if total_duration <= 0:
-		total_duration = 1.0  # Avoid division by zero
+	# Get current playback time and find current position index
+	var current_time = recorder.get_playback_time()
+	var current_index = recorder.current_playback_index
 	
-	# Create markers for each recorded position
-	for event in recorded_inputs:
+	# Find the next 3 position events after current index
+	var position_events: Array[Dictionary] = []
+	for i in range(current_index, recorded_inputs.size()):
+		var event = recorded_inputs[i]
 		if event.has("player_position"):
-			var pos = event.player_position
-			var position = Vector2(pos.x, pos.y)
-			
-			# Create marker node
-			var marker = Node2D.new()
-			marker.name = "RecordedPositionMarker"
-			
-			# Create a small circle marker
-			var circle = Polygon2D.new()
-			circle.name = "Circle"
-			var points = PackedVector2Array()
-			var segments = 8
-			var radius = 2.0
-			for i in range(segments):
-				var angle = (i / float(segments)) * TAU
-				points.append(Vector2(cos(angle), sin(angle)) * radius)
-			circle.polygon = points
-			
-			# Calculate color based on timestamp (black to white)
-			var timestamp = event.get("timestamp", 0.0)
-			var time_ratio = clamp(timestamp / total_duration, 0.0, 1.0)
-			var color_value = time_ratio  # 0.0 = black, 1.0 = white
-			circle.color = Color(color_value, color_value, color_value, 0.6)  # Grayscale with alpha
-			circle.z_index = 99
-			
-			marker.add_child(circle)
-			marker.global_position = position
-			
-			# Add to scene
-			current_parent.add_child(marker)
-			recorded_position_markers.append(marker)
+			position_events.append(event)
+			if position_events.size() >= 3:  # Only take next 3 positions
+				break
 	
-	print("[Playback] Created %d position markers (black=start, white=end)" % recorded_position_markers.size())
+	# Create markers for the next 3 positions
+	for i in range(position_events.size()):
+		var event = position_events[i]
+		var pos = event.player_position
+		var position = Vector2(pos.x, pos.y)
+		
+		# Create marker node
+		var marker = Node2D.new()
+		marker.name = "RecordedPositionMarker"
+		
+		# Create a small circle marker
+		var circle = Polygon2D.new()
+		circle.name = "Circle"
+		var points = PackedVector2Array()
+		var segments = 8
+		var radius = 2.0
+		for j in range(segments):
+			var angle = (j / float(segments)) * TAU
+			points.append(Vector2(cos(angle), sin(angle)) * radius)
+		circle.polygon = points
+		
+		# Calculate color based on position order (darker = closer, lighter = further)
+		var color_ratio = float(i) / max(1, position_events.size() - 1)
+		var color_value = color_ratio  # 0.0 = black (next), 1.0 = white (3rd position)
+		circle.color = Color(color_value, color_value, color_value, 0.6)  # Grayscale with alpha
+		circle.z_index = 99
+		
+		marker.add_child(circle)
+		marker.global_position = position
+		
+		# Add to scene
+		current_parent.add_child(marker)
+		recorded_position_markers.append(marker)
+	
+
+## Update path markers to show next 3 positions during playback
+func _update_path_markers() -> void:
+	"""Update path markers to show only the next 3 recorded positions"""
+	if not recorder:
+		return
+	
+	# Check if we need to update markers (only update every 0.2 seconds to avoid performance issues)
+	if not has_meta("last_marker_update_time"):
+		set_meta("last_marker_update_time", 0.0)
+	
+	var current_time = recorder.get_playback_time()
+	var last_update = get_meta("last_marker_update_time")
+	if current_time - last_update < 0.2:  # Update every 0.2 seconds
+		return
+	
+	set_meta("last_marker_update_time", current_time)
+	
+	# Remove old markers and create new ones
+	_remove_recorded_positions_markers()
+	_create_recorded_positions_markers()
 
 ## Remove all recorded position markers
 func _remove_recorded_positions_markers() -> void:
@@ -1276,6 +1437,50 @@ func _navigate_to_last_position() -> void:
 			last_position.position.x, last_position.position.y
 		])
 
+## Handle object interaction during playback
+func _handle_playback_object_interaction(_click_position: Vector2) -> void:
+	"""Handle clicking on objects during playback to replicate object interactions"""
+	if not recorder:
+		return
+	
+	# Get the current playback event to check for object interaction data
+	var current_playback_index = recorder.current_playback_index
+	var recorded_inputs = recorder.get_recorded_inputs()
+	
+	if current_playback_index >= 0 and current_playback_index < recorded_inputs.size():
+		var current_event = recorded_inputs[current_playback_index]
+		
+		# Check if this click was on a moveable object
+		if current_event.has("clicked_object_id"):
+			var object_id = current_event["clicked_object_id"]
+			var was_attached = current_event.get("object_attachment_state", false)
+			
+			# Find the object by ID
+			var target_object = _find_object_by_id(object_id)
+			if target_object:
+				print("[Playback] Interacting with object: %s (was attached: %s)" % [object_id, was_attached])
+				
+				# Simulate the object interaction
+				if was_attached:
+					# Object was attached, so detach it
+					if target_object.has_method("detach_from_player"):
+						target_object.detach_from_player()
+				else:
+					# Object was not attached, so attach it
+					if target_object.has_method("attach_to_player"):
+						target_object.attach_to_player()
+
+## Find an object by its unique ID
+func _find_object_by_id(object_id: String) -> Node:
+	"""Find a moveable object by its unique ID"""
+	var moveable_objects = get_tree().get_nodes_in_group("moveable")
+	
+	for obj in moveable_objects:
+		if obj.has_method("get_object_id") and obj.get_object_id() == object_id:
+			return obj
+	
+	return null
+
 ## NPC-specific: Load and play most recent recording with looping
 func _npc_load_and_play_most_recent() -> void:
 	"""Load the most recent recording and start playing it (NPC mode only)"""
@@ -1285,10 +1490,10 @@ func _npc_load_and_play_most_recent() -> void:
 	var recording_path = get_most_recent_recording()
 	
 	if recording_path.is_empty():
-		push_warning("[NPC] No recordings found in res://recordings/")
+		push_warning("[Ghost] No recordings found in res://recordings/")
 		return
 	
-	print("[NPC] Loading most recent recording: ", recording_path)
+		print("[NPC] Loading most recent recording: ", recording_path)
 	
 	if recorder.load_from_file(recording_path):
 		print("[NPC] Recording loaded successfully")
@@ -1347,3 +1552,376 @@ func _spawn_on_random_tile() -> void:
 	position = spawn_position
 	
 	print("[Player] Spawned on random tile %s at position %s on floor '%s'" % [random_tile, spawn_position, spawn_floor_name])
+
+# ============================================================================
+# NPC Following System Methods
+# ============================================================================
+
+func get_npc_at_position(click_position: Vector2) -> Node:
+	"""Check if there's an NPC at the clicked position"""
+	var npcs = get_tree().get_nodes_in_group("npc")
+	var click_radius = 20.0  # Radius to check for NPCs
+	
+	print("[NPC Detection] Checking for NPCs at click position: %s" % click_position)
+	print("[NPC Detection] Found %d NPCs in group" % npcs.size())
+	
+	for npc in npcs:
+		if npc and is_instance_valid(npc):
+			var distance = npc.global_position.distance_to(click_position)
+			print("[NPC Detection] NPC %s at %s, distance: %.1f" % [npc.name, npc.global_position, distance])
+			if distance <= click_radius:
+				print("[NPC Detection] Found NPC within radius: %s" % npc.name)
+				return npc
+	
+	print("[NPC Detection] No NPC found within %.1f radius" % click_radius)
+	return null
+
+func follow_npc(npc: Node) -> void:
+	"""Start following a specific NPC"""
+	if not npc or not is_instance_valid(npc):
+		push_warning("[Player] Invalid NPC provided for following")
+		return
+	
+	# Stop following any current NPC and remove its indicator
+	if is_following_npc:
+		_remove_follow_indicator()  # Remove indicator from old NPC
+		stop_following_npc()
+	
+	# Set up following
+	followed_npc = npc
+	is_following_npc = true
+	follow_update_timer = 0.0
+	
+	# Record the NPC following event
+	_record_npc_follow_event(npc)
+	
+	# Start navigation to the NPC (maintaining follow distance)
+	if navigation_agent:
+		var current_distance = global_position.distance_to(npc.global_position)
+		if current_distance > follow_distance:
+			var direction_to_npc = (npc.global_position - global_position).normalized()
+			var target_position = npc.global_position - direction_to_npc * follow_distance
+			navigation_agent.target_position = target_position
+			is_navigating = true
+		else:
+			# Already close enough
+			is_navigating = false
+	
+	print("[Player] Started following NPC: %s" % npc.name)
+	
+	# Add visual feedback
+	_add_follow_indicator(npc)
+
+func stop_following_npc() -> void:
+	"""Stop following the current NPC"""
+	if not is_following_npc:
+		return
+	
+	print("[Player] Stopped following NPC: %s" % followed_npc.name if followed_npc else "unknown")
+	
+	# Record the stop following event
+	_record_npc_stop_follow_event()
+	
+	# Clear following state
+	is_following_npc = false
+	followed_npc = null
+	follow_update_timer = 0.0
+	
+	# Stop navigation
+	is_navigating = false
+	
+	# Remove visual feedback
+	_remove_follow_indicator()
+
+func _update_npc_following(delta: float) -> void:
+	"""Update NPC following system - called every physics frame"""
+	if not is_following_npc or not followed_npc or not is_instance_valid(followed_npc):
+		# Clean up if NPC is no longer valid
+		if is_following_npc:
+			stop_following_npc()
+		return
+	
+	# Check if we're currently using keyboard input
+	var any_key_pressed = false
+	if is_npc:
+		any_key_pressed = (simulated_inputs.get("ui_right", false) or 
+						  simulated_inputs.get("ui_left", false) or 
+						  simulated_inputs.get("ui_up", false) or 
+						  simulated_inputs.get("ui_down", false))
+	
+	# Check current distance to NPC
+	var current_distance = global_position.distance_to(followed_npc.global_position)
+	
+	# Only update navigation if we're too far away and not using keyboard input
+	if current_distance > follow_distance and not any_key_pressed:
+		# Update timer
+		follow_update_timer += delta
+		
+		# Update target position every second or if we're getting too far
+		if follow_update_timer >= follow_update_interval or current_distance > follow_distance * 2.0:
+			follow_update_timer = 0.0
+			
+			# Calculate target position that maintains the desired distance
+			var direction_to_npc = (followed_npc.global_position - global_position).normalized()
+			var target_position = followed_npc.global_position - direction_to_npc * follow_distance
+			
+			# Update navigation target
+			if navigation_agent:
+				navigation_agent.target_position = target_position
+				is_navigating = true
+	elif current_distance <= follow_distance:
+		# We're close enough - stop navigating
+		if is_navigating:
+			is_navigating = false
+			print("[Player] Close enough to NPC, stopping navigation")
+	elif any_key_pressed:
+		# We're using keyboard input - pause following but keep it active
+		pass
+
+func _add_follow_indicator(npc: Node) -> void:
+	"""Add visual indicator to show which NPC is being followed"""
+	# Remove any existing indicator from any NPC
+	_remove_all_follow_indicators()
+	
+	# Create a simple circle indicator above the NPC
+	var indicator = Node2D.new()
+	
+	# Different indicator names and colors for player vs NPC following
+	if is_npc:
+		indicator.name = "NPCFollowIndicator"
+		var circle = Polygon2D.new()
+		circle.name = "Circle"
+		var points = PackedVector2Array()
+		var segments = 12
+		var radius = 6.0
+		for i in range(segments):
+			var angle = (i / float(segments)) * TAU
+			points.append(Vector2(cos(angle), sin(angle)) * radius)
+		circle.polygon = points
+		circle.color = Color(0.0, 1.0, 0.0, 0.8)  # Green for NPC following
+		circle.z_index = 99  # Slightly below player indicator
+		
+		indicator.add_child(circle)
+		indicator.position = Vector2(0, -15)  # Slightly lower than player indicator
+	else:
+		indicator.name = "PlayerFollowIndicator"
+		var circle = Polygon2D.new()
+		circle.name = "Circle"
+		var points = PackedVector2Array()
+		var segments = 12
+		var radius = 8.0
+		for i in range(segments):
+			var angle = (i / float(segments)) * TAU
+			points.append(Vector2(cos(angle), sin(angle)) * radius)
+		circle.polygon = points
+		circle.color = Color(1.0, 1.0, 0.0, 0.8)  # Yellow for player following
+		circle.z_index = 100  # Always on top
+		
+		indicator.add_child(circle)
+		indicator.position = Vector2(0, -20)  # Above the NPC
+	
+	# Add to the NPC
+	npc.add_child(indicator)
+
+func _remove_follow_indicator() -> void:
+	"""Remove the follow indicator from the currently followed NPC"""
+	if followed_npc and is_instance_valid(followed_npc):
+		var indicator_name = "PlayerFollowIndicator" if not is_npc else "NPCFollowIndicator"
+		var indicator = followed_npc.get_node_or_null(indicator_name)
+		if indicator:
+			indicator.queue_free()
+
+func _remove_all_follow_indicators() -> void:
+	"""Remove follow indicators from all NPCs"""
+	var npcs = get_tree().get_nodes_in_group("npc")
+	for npc in npcs:
+		if npc and is_instance_valid(npc):
+			# Remove both types of indicators
+			var player_indicator = npc.get_node_or_null("PlayerFollowIndicator")
+			if player_indicator:
+				player_indicator.queue_free()
+			var npc_indicator = npc.get_node_or_null("NPCFollowIndicator")
+			if npc_indicator:
+				npc_indicator.queue_free()
+
+func _record_npc_follow_event(npc: Node) -> void:
+	"""Record when the player starts following an NPC"""
+	if not recorder:
+		return
+	
+	var current_time = Time.get_ticks_msec() / 1000.0
+	
+	# Create a special event for NPC following
+	var event = {
+		"timestamp": current_time,
+		"action": "npc_follow_start",
+		"pressed": true,
+		"npc_id": npc.name,
+		"npc_position": {
+			"x": npc.global_position.x,
+			"y": npc.global_position.y
+		},
+		"follow_distance": follow_distance
+	}
+	
+	print("[Player] Recording NPC follow start - NPC ID: %s" % npc.name)
+	
+	# Record player position and state
+	event["player_position"] = {
+		"x": global_position.x,
+		"y": global_position.y
+	}
+	
+	# Record current floor
+	var current_floor = get_parent()
+	if current_floor:
+		event["floor"] = current_floor.name
+		
+		# Record tile position if available
+		if has_method("get_current_tile"):
+			var tile_pos = get_current_tile()
+			event["tile_position"] = {
+				"x": tile_pos.x,
+				"y": tile_pos.y
+			}
+	
+	# Record z-height if available
+	if "z_height" in self:
+		event["z_height"] = z_height
+	
+	# Add to recorder's recorded inputs
+	if recorder.has_method("get_recorded_inputs"):
+		var recorded_inputs = recorder.get_recorded_inputs()
+		recorded_inputs.append(event)
+	
+	print("[Player] Recorded NPC follow start: %s at %s" % [npc.name, npc.global_position])
+
+func _record_npc_stop_follow_event() -> void:
+	"""Record when the player stops following an NPC"""
+	if not recorder:
+		return
+	
+	var current_time = Time.get_ticks_msec() / 1000.0
+	
+	# Create a special event for stopping NPC following
+	var event = {
+		"timestamp": current_time,
+		"action": "npc_follow_stop",
+		"pressed": false
+	}
+	
+	# Record player position and state
+	event["player_position"] = {
+		"x": global_position.x,
+		"y": global_position.y
+	}
+	
+	# Record current floor
+	var current_floor = get_parent()
+	if current_floor:
+		event["floor"] = current_floor.name
+		
+		# Record tile position if available
+		if has_method("get_current_tile"):
+			var tile_pos = get_current_tile()
+			event["tile_position"] = {
+				"x": tile_pos.x,
+				"y": tile_pos.y
+			}
+	
+	# Record z-height if available
+	if "z_height" in self:
+		event["z_height"] = z_height
+	
+	# Add to recorder's recorded inputs
+	if recorder.has_method("get_recorded_inputs"):
+		var recorded_inputs = recorder.get_recorded_inputs()
+		recorded_inputs.append(event)
+	
+	print("[Player] Recorded NPC follow stop")
+
+func _handle_playback_npc_follow_start() -> void:
+	"""Handle NPC follow start during playback"""
+	if not recorder:
+		return
+	
+	# Get the current playback event to extract NPC information
+	var current_playback_index = recorder.current_playback_index
+	var recorded_inputs = recorder.get_recorded_inputs()
+	
+	if current_playback_index >= 0 and current_playback_index < recorded_inputs.size():
+		var current_event = recorded_inputs[current_playback_index]
+		
+		# Extract NPC information from the recorded event
+		if current_event.has("npc_id") and current_event.has("npc_position"):
+			var npc_id = current_event["npc_id"]
+			var npc_position = Vector2(current_event["npc_position"]["x"], current_event["npc_position"]["y"])
+			var recorded_follow_distance = current_event.get("follow_distance", follow_distance)
+			
+			# Find the NPC by ID
+			var target_npc = _find_npc_by_id(npc_id)
+			if target_npc:
+				# Use the recorded follow distance
+				var original_distance = follow_distance
+				follow_distance = recorded_follow_distance
+				
+				# Start following the NPC (this will set up dynamic following)
+				follow_npc(target_npc)
+				
+				# Restore original follow distance
+				follow_distance = original_distance
+				
+				print("[Playback] Started following NPC: %s (recorded distance: %.1f)" % [npc_id, recorded_follow_distance])
+			else:
+				print("[Playback] Could not find NPC with ID: %s" % npc_id)
+		else:
+			print("[Playback] NPC follow event missing required data")
+
+func _handle_playback_npc_follow_stop() -> void:
+	"""Handle NPC follow stop during playback"""
+	if is_following_npc:
+		stop_following_npc()
+		print("[Playback] Stopped following NPC")
+
+func _find_npc_by_id(npc_id: String) -> Node:
+	"""Find an NPC by its unique ID (name)"""
+	var npcs = get_tree().get_nodes_in_group("npc")
+	
+	print("[Playback] Looking for NPC with ID: %s" % npc_id)
+	print("[Playback] Available NPCs:")
+	for npc in npcs:
+		if npc and is_instance_valid(npc):
+			print("  - %s" % npc.name)
+			if npc.name == npc_id:
+				print("[Playback] Found matching NPC: %s" % npc.name)
+				return npc
+	
+	print("[Playback] No matching NPC found for ID: %s" % npc_id)
+	return null
+
+func _connect_to_npc_synchronization() -> void:
+	"""Connect to NPC manager signal to start recording when NPCs start"""
+	# Find the NPC manager
+	var npc_manager = get_tree().get_first_node_in_group("npc_manager")
+	if not npc_manager:
+		# Try to find it by name
+		npc_manager = get_node_or_null("../GhostManager")
+	
+	if npc_manager and npc_manager.has_signal("all_npcs_started_playback"):
+		npc_manager.all_npcs_started_playback.connect(_on_npcs_started_playback)
+		print("[Player] Connected to NPC synchronization signal")
+	else:
+		# Fallback: start recording immediately if no NPC manager found
+		print("[Player] No NPC manager found, starting recording immediately...")
+		_start_recording_synchronized()
+
+func _on_npcs_started_playback() -> void:
+	"""Called when all NPCs have started their playback"""
+	print("[Player] NPCs have started playback - beginning recording now!")
+	_start_recording_synchronized()
+
+func _start_recording_synchronized() -> void:
+	"""Start recording synchronized with NPCs"""
+	print("\n[Player] Auto-starting INPUT_ONLY recording for %.1f seconds..." % auto_record_duration)
+	start_recording()
+	recording_elapsed_time = 0.0

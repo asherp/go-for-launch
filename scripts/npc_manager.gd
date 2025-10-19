@@ -3,6 +3,18 @@ extends Node2D
 ## NPC Manager - Spawns multiple npc players based on available recordings
 ## This script automatically discovers all recording files and creates a npc for each one
 
+signal all_npcs_started_playback
+
+func get_player_number_from_filename(filename: String) -> int:
+	"""Extract player number from filename like 'player_1.json'"""
+	var base_name = filename.get_basename()
+	if base_name.begins_with("player_"):
+		var number_part = base_name.substr(7)  # Remove "player_" prefix
+		if number_part.is_valid_int():
+			return number_part.to_int()
+	# Invalid format, return 0 to sort first
+	return 0
+
 # NPC player scene template (we'll duplicate the existing npc)
 @export var npc_scene_path: String = "res://scenes/launch_blocks.tscn"
 @export var recordings_directory: String = "res://recordings"
@@ -22,6 +34,9 @@ var spawned_npcs: Array[Node] = []
 var recording_files: Array[String] = []
 
 func _ready() -> void:
+	# Add to group for easy finding
+	add_to_group("npc_manager")
+	
 	# Wait a frame to ensure scene is fully loaded
 	await get_tree().process_frame
 	spawn_all_npcs()
@@ -40,13 +55,20 @@ func spawn_all_npcs() -> void:
 	
 	print("[NPCManager] Found %d recordings, spawning npcs..." % recording_files.size())
 	
-	# Spawn a npc for each recording (await each one to ensure proper setup)
+	# First, spawn all NPCs without starting playback
 	for i in range(recording_files.size()):
 		var recording_path = recording_files[i]
 		var npc = await spawn_npc_for_recording(recording_path, i)
 		if npc:
 			spawned_npcs.append(npc)
 			print("[NPCManager] Spawned npc %d for recording: %s" % [i + 1, recording_path.get_file()])
+	
+	# Wait a moment for all NPCs to be fully initialized
+	await get_tree().create_timer(0.2).timeout
+	
+	# Now start all recordings simultaneously
+	print("[NPCManager] Starting all recordings simultaneously...")
+	start_all_recordings()
 
 func get_all_recording_files() -> Array[String]:
 	"""Get all recording files sorted by modification time (newest first)"""
@@ -64,7 +86,7 @@ func get_all_recording_files() -> Array[String]:
 	var file_name = dir.get_next()
 	
 	while file_name != "":
-		if file_name.ends_with(".json") and file_name.begins_with("player_recording_"):
+		if file_name.ends_with(".json") and file_name.begins_with("player_"):
 			var full_path = recordings_directory + "/" + file_name
 			var modified_time = FileAccess.get_modified_time(full_path)
 			file_data.append({
@@ -77,8 +99,8 @@ func get_all_recording_files() -> Array[String]:
 	
 	dir.list_dir_end()
 	
-	# Sort by modification time (newest first)
-	file_data.sort_custom(func(a, b): return a.time > b.time)
+	# Sort by player number for consistent ordering across sessions
+	file_data.sort_custom(func(a, b): return get_player_number_from_filename(a.name) < get_player_number_from_filename(b.name))
 	
 	# Extract just the paths
 	for data in file_data:
@@ -216,7 +238,7 @@ func spawn_npc_for_recording(recording_path: String, npc_index: int) -> Node:
 	print("[NPCManager] Found target floor: %s, start position: %s" % [target_floor.name, start_position])
 	
 	# Create a new npc player with the starting position
-	var npc = create_npc_player(npc_index, start_position)
+	var npc = create_npc_player(npc_index, start_position, recording_path)
 	if not npc:
 		push_error("[NPCManager] Failed to create npc player %d" % (npc_index + 1))
 		return null
@@ -241,18 +263,20 @@ func spawn_npc_for_recording(recording_path: String, npc_index: int) -> Node:
 		else:
 			print("[NPCManager] WARNING: NPC %d sprite has no texture!" % (npc_index + 1))
 	
-	# Set up the npc with the specific recording (await it!)
-	await setup_npc_for_recording(npc, recording_path, npc_index)
+	# Set up the npc with the specific recording (but don't start playback yet)
+	await setup_npc_for_recording(npc, recording_path, npc_index, false)
 	
 	return npc
 
-func create_npc_player(npc_index: int, start_position: Vector2) -> Node:
+func create_npc_player(npc_index: int, start_position: Vector2, recording_path: String) -> Node:
 	"""Create a new npc player node with all required components"""
 	print("[NPCManager] Creating npc player %d (start_position will be: %s)..." % [npc_index + 1, start_position])
 	
 	# Create the main CharacterBody2D
 	var npc = CharacterBody2D.new()
-	npc.name = "NPCPlayer_%d" % (npc_index + 1)
+	# Use player number for consistent naming across sessions
+	var player_number = get_player_number_from_filename(recording_path.get_file())
+	npc.name = "player_%d" % player_number
 	npc.z_index = 2  # Higher z_index to ensure visibility
 	npc.add_to_group("npc")
 	
@@ -295,7 +319,7 @@ func create_npc_player(npc_index: int, start_position: Vector2) -> Node:
 	nav_agent.path_desired_distance = 5.0
 	nav_agent.target_desired_distance = 5.0
 	nav_agent.path_postprocessing = 1
-	nav_agent.debug_enabled = true
+	nav_agent.debug_enabled = false  # Disable debug trails for NPCs
 	nav_agent.debug_use_custom = true
 	npc.add_child(nav_agent)
 	
@@ -327,6 +351,9 @@ func create_npc_player(npc_index: int, start_position: Vector2) -> Node:
 		# Disable position correction for npcs to prevent navigation issues
 		npc.set("max_deviation_threshold", 999999.0)
 		
+		# Enable NPC-to-NPC following
+		npc.set("can_follow_others", true)
+		
 		# Set npc color (cycle through available colors)
 		if npc_index < npc_colors.size():
 			npc.set("npc_color", npc_colors[npc_index])
@@ -345,7 +372,7 @@ func create_npc_player(npc_index: int, start_position: Vector2) -> Node:
 	print("[NPCManager] Successfully created complete npc player %d" % (npc_index + 1))
 	return npc
 
-func setup_npc_for_recording(npc: Node, recording_path: String, npc_index: int) -> void:
+func setup_npc_for_recording(npc: Node, recording_path: String, npc_index: int, start_playback_immediately: bool = true) -> void:
 	"""Set up a npc to play a specific recording"""
 	print("[NPCManager] Setting up npc %d with recording..." % (npc_index + 1))
 	
@@ -377,8 +404,8 @@ func setup_npc_for_recording(npc: Node, recording_path: String, npc_index: int) 
 				var event_count = recorder.get_recorded_inputs().size()
 				print("[NPCManager] NPC %d recorder has %d events loaded" % [npc_index + 1, event_count])
 			
-			# Start playback immediately - no delay
-			if npc.has_method("start_playback"):
+			# Start playback only if requested
+			if start_playback_immediately and npc.has_method("start_playback"):
 				print("[NPCManager] Starting playback for npc %d..." % (npc_index + 1))
 				var playback_started = await npc.start_playback(1.0, false)  # Position correction disabled for multiple npcs
 				if playback_started:
@@ -389,6 +416,23 @@ func setup_npc_for_recording(npc: Node, recording_path: String, npc_index: int) 
 			push_error("[NPCManager] Failed to load recording for npc %d: %s" % [npc_index + 1, recording_path])
 	else:
 		push_error("[NPCManager] NPC %d does not have load_recording_from_file method" % (npc_index + 1))
+
+func start_all_recordings() -> void:
+	"""Start playback for all spawned NPCs simultaneously"""
+	print("[NPCManager] Starting simultaneous playback for %d NPCs..." % spawned_npcs.size())
+	
+	# Start all recordings at the same time
+	for i in range(spawned_npcs.size()):
+		var npc = spawned_npcs[i]
+		if npc and is_instance_valid(npc) and npc.has_method("start_playback"):
+			print("[NPCManager] Starting playback for NPC %d..." % (i + 1))
+			# Don't await - start all simultaneously
+			npc.start_playback(1.0, false)  # Position correction disabled for multiple npcs
+	
+	print("[NPCManager] All recordings started simultaneously!")
+	
+	# Emit signal to notify that all NPCs have started
+	all_npcs_started_playback.emit()
 
 func clear_all_npcs() -> void:
 	"""Remove all spawned npcs"""
