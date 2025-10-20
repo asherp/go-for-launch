@@ -115,6 +115,8 @@ class PlayerFrame:
 var is_recording: bool = false
 var recording_start_time: float = 0.0
 var recorded_inputs: Array[Dictionary] = []
+var original_recording: Array[Dictionary] = []  # Store original recording for hybrid mode
+var takeover_timestamp: float = 0.0  # Time when player took over
 var last_input_state: Dictionary = {}  # Track previous input state to detect changes
 
 # Position checkpoint recording (every N seconds)
@@ -178,14 +180,33 @@ func _physics_process(delta: float) -> void:
 		_check_playback_position_accuracy()
 
 ## Start recording player input events
-func start_recording() -> void:
+func start_recording(clear_existing: bool = true) -> void:
 	if not player:
 		push_error("PlayerRecorder: No player reference set!")
 		return
 	
 	is_recording = true
 	recording_start_time = Time.get_ticks_msec() / 1000.0
-	recorded_inputs.clear()
+	
+	# Clear existing inputs only if requested (for hybrid recording)
+	if clear_existing:
+		recorded_inputs.clear()
+		original_recording.clear()
+		print("PlayerRecorder: Started fresh recording")
+	else:
+		print("PlayerRecorder: Started hybrid recording - preserving original %d events" % recorded_inputs.size())
+		# For hybrid recording, preserve the original recording and start fresh
+		original_recording = recorded_inputs.duplicate()
+		recorded_inputs.clear()
+		
+		# Record the exact takeover timestamp
+		takeover_timestamp = Time.get_ticks_msec() / 1000.0 - recording_start_time
+		print("PlayerRecorder: Takeover occurred at timestamp %.3f" % takeover_timestamp)
+		
+		# Adjust the start time to continue from the takeover point
+		recording_start_time = Time.get_ticks_msec() / 1000.0 - takeover_timestamp
+		print("PlayerRecorder: Adjusted start time to continue from takeover timestamp %.3f" % takeover_timestamp)
+	
 	time_since_last_checkpoint = 0.0
 	_reset_input_state()
 	
@@ -285,9 +306,12 @@ func start_playback(speed: float = 1.0, enable_position_correction: bool = false
 		return false
 	
 	print("PlayerRecorder: Recording has %d events, positioning player..." % recorded_inputs.size())
+	print("PlayerRecorder: About to call _position_player_at_start()")
 	
 	# Position player at the starting location from the recording
-	if not await _position_player_at_start():
+	var position_result = await _position_player_at_start()
+	print("PlayerRecorder: _position_player_at_start() returned: %s" % position_result)
+	if not position_result:
 		push_error("PlayerRecorder: Failed to position player at starting location")
 		return false
 	
@@ -313,6 +337,7 @@ func start_playback(speed: float = 1.0, enable_position_correction: bool = false
 ## Position player at the starting location from recording
 func _position_player_at_start() -> bool:
 	if not player:
+		push_error("PlayerRecorder: No player reference")
 		return false
 	
 	# Find first event with position data
@@ -330,6 +355,8 @@ func _position_player_at_start() -> bool:
 	var start_pos = start_event.player_position
 	var start_position = Vector2(start_pos.x, start_pos.y)
 	
+	print("PlayerRecorder: Looking for floor '%s' in scene" % start_floor_name)
+	
 	# Find the target floor in the scene
 	var current_parent = player.get_parent()
 	var grandparent = current_parent.get_parent() if current_parent else null
@@ -338,7 +365,12 @@ func _position_player_at_start() -> bool:
 		push_error("PlayerRecorder: Could not find scene root")
 		return false
 	
-	var target_floor = grandparent.get_node_or_null(start_floor_name)
+	print("PlayerRecorder: Scene root found: %s" % grandparent.name)
+	print("PlayerRecorder: Available floors in scene:")
+	for child in grandparent.get_children():
+		print("  - %s" % child.name)
+	
+	var target_floor = grandparent.get_node_or_null(NodePath(start_floor_name))
 	
 	if not target_floor:
 		push_error("PlayerRecorder: Could not find floor '%s' in scene" % start_floor_name)
@@ -452,21 +484,11 @@ func _simulate_input_event(event: Dictionary) -> void:
 		_apply_position_checkpoint(event)
 		return
 	
-	# Handle mouse clicks - position player before navigation starts
+	# Handle mouse clicks - set navigation target
 	var mouse_pos = Vector2.ZERO
 	if action == "mouse_click" and pressed and event.has("click_position"):
 		var pos = event.click_position
 		mouse_pos = Vector2(pos.x, pos.y)
-		
-		# Position player at the recorded position when the click occurred
-		# This ensures navigation path starts from the same location
-		if player and position_correction_enabled and event.has("player_position"):
-			var click_player_pos = event.player_position
-			var start_position = Vector2(click_player_pos.x, click_player_pos.y)
-			player.global_position = start_position
-			print("[Playback] Positioned player at (%.1f, %.1f) for navigation click" % [
-				start_position.x, start_position.y
-			])
 	
 	# Emit signal so the player can respond
 	playback_input.emit(action, pressed, mouse_pos)
@@ -509,7 +531,8 @@ func _handle_floor_change(event: Dictionary) -> void:
 	if player.has_method("update_z_index"):
 		player.update_z_index()
 	
-	print("[Playback] Floor transition: %s → %s" % [
+	print("[%s] Floor transition: %s → %s" % [
+		player.name if player else "Unknown",
 		event.get("from_floor", "?"),
 		to_floor_name
 	])
@@ -527,8 +550,9 @@ func _apply_position_checkpoint(event: Dictionary) -> void:
 	var current_position = player.global_position
 	var deviation = current_position.distance_to(target_position)
 	
-	# Always apply checkpoint corrections (they're ground truth)
-	if deviation > 0.5:  # Only correct if meaningfully different
+	# Apply checkpoint corrections (they're ground truth) but skip during navigation
+	var is_navigating = player.has_method("is_navigating") and player.is_navigating
+	if deviation > position_correction_threshold and not is_navigating:  # Use same threshold as main correction
 		player.global_position = target_position
 		
 		# Keep velocity intact to maintain momentum during correction
@@ -537,7 +561,7 @@ func _apply_position_checkpoint(event: Dictionary) -> void:
 		if event.has("z_height") and "z_height" in player:
 			player.z_height = event.z_height
 		
-		print("[Playback] Position checkpoint applied - corrected %.1fpx deviation" % deviation)
+		print("[%s] Position checkpoint applied - corrected %.1fpx deviation" % [player.name, deviation])
 
 ## Apply navigation target during playback
 
@@ -656,10 +680,14 @@ func _check_playback_position_accuracy() -> void:
 	var deviation = actual_pos.distance_to(expected_pos)
 	
 	# Apply position correction if enabled and deviation is too large
-	if position_correction_enabled and deviation > position_correction_threshold:
+	# Skip correction during navigation to avoid conflicts with pathfinding
+	var is_navigating = player.has_method("is_navigating") and player.is_navigating
+	if position_correction_enabled and deviation > position_correction_threshold and not is_navigating:
 		player.global_position = expected_pos
 		# Keep velocity intact to maintain momentum
-		print("[Playback] Position corrected - was %.1fpx off" % deviation)
+		print("[%s] Position corrected - was %.1fpx off" % [player.name, deviation])
+	elif is_navigating and deviation > position_correction_threshold:
+		print("[%s] Skipping position correction during navigation - was %.1fpx off" % [player.name, deviation])
 	
 	# Track for statistics
 	position_deviations.append(deviation)
@@ -773,7 +801,16 @@ func _check_and_record_inputs() -> void:
 		_record_input_event(timestamp, "jump", true)
 	
 	if mouse_click != last_input_state.mouse_click:
-		_record_input_event(timestamp, "mouse_click", mouse_click, mouse_pos)
+		# Check if this mouse click should be skipped (e.g., when clicking on NPCs)
+		var should_skip = false
+		if player and player.has_method("should_skip_mouse_click_recording"):
+			should_skip = player.should_skip_mouse_click_recording()
+		
+		if not should_skip:
+			_record_input_event(timestamp, "mouse_click", mouse_click, mouse_pos)
+		else:
+			print("[PlayerRecorder] Skipped recording mouse click (NPC follow)")
+		
 		last_input_state.mouse_click = mouse_click
 		last_input_state.mouse_pos = mouse_pos
 
@@ -821,9 +858,19 @@ func _record_position_checkpoint() -> void:
 	if not player:
 		return
 	
-	# Skip position checkpoints only while actively moving between waypoints
-	# (not when just having a navigation target set)
-	if "is_navigating" in player and player.is_navigating and "velocity" in player and player.velocity.length() > 1.0:
+	# Skip recording position checkpoints during navigation or NPC following
+	# During navigation/following, the player is being moved by pathfinding/following, not by recorded inputs
+	if player.has_method("is_navigating") and player.is_navigating:
+		return
+	
+	# Skip recording position checkpoints while following an NPC
+	if player.has_method("is_following_npc") and player.is_following_npc:
+		print("[PlayerRecorder] Skipping position checkpoint - player is following NPC")
+		return
+	
+	# Alternative check: if player has a followed_npc, they're following
+	if "followed_npc" in player and player.followed_npc != null:
+		print("[PlayerRecorder] Skipping position checkpoint - player has followed_npc")
 		return
 	
 	var current_time = Time.get_ticks_msec() / 1000.0
@@ -876,16 +923,35 @@ func get_input_recording_as_dict() -> Dictionary:
 	if player:
 		player_name = str(player.name)
 	
+	# For hybrid recordings, combine original + new events
+	var all_events = recorded_inputs
+	if not original_recording.is_empty():
+		# Filter original events to only include those before takeover
+		var original_before_takeover = []
+		for event in original_recording:
+			if event.get("timestamp", 0.0) <= takeover_timestamp:
+				original_before_takeover.append(event)
+		
+		# Combine original (before takeover) + new events (after takeover)
+		all_events = original_before_takeover + recorded_inputs
+		print("PlayerRecorder: Combining %d original (before %.3fs) + %d new events = %d total" % [
+			original_before_takeover.size(), recorded_inputs.size(), all_events.size(), takeover_timestamp
+		])
+	
+	# Sort all events by timestamp to ensure chronological order
+	all_events.sort_custom(func(a, b): return a.get("timestamp", 0.0) < b.get("timestamp", 0.0))
+	print("PlayerRecorder: Sorted %d events by timestamp for chronological order" % all_events.size())
+	
 	var duration = 0.0
-	if not recorded_inputs.is_empty():
-		duration = recorded_inputs[-1].timestamp
+	if not all_events.is_empty():
+		duration = all_events[-1].timestamp
 	
 	return {
 		"version": 1,
 		"player_name": player_name,
 		"duration": duration,
-		"event_count": recorded_inputs.size(),
-		"events": recorded_inputs
+		"event_count": all_events.size(),
+		"events": all_events
 	}
 
 ## Load input recording from dictionary

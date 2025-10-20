@@ -67,9 +67,9 @@ static func to_display_name(internal_name: String) -> String:
 static func from_filename(filename: String) -> String:
 	var base_name = filename.get_basename()
 	
-	# Check if it's a character name file (contains underscores but not player_)
-	if "_" in base_name and not base_name.begins_with("player_"):
-		# Use the filename directly as character name (already lowercase with underscores)
+	# Check if it's a character name file (not player_ format)
+	if not base_name.begins_with("player_"):
+		# Use the filename directly as character name (already lowercase)
 		return base_name
 	
 	# Fallback to old player_ format - use the filename as-is for backward compatibility

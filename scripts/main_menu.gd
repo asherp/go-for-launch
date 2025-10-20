@@ -43,10 +43,14 @@ func _load_available_recordings() -> void:
 		# Load recording data to get character info
 		var character_info = _load_character_info(recording_path)
 		
+		# Create a horizontal container for the character button and delete button
+		var character_container = HBoxContainer.new()
+		character_container.custom_minimum_size = Vector2(0, 60)
+		
 		# Create button for this character
 		var character_button = Button.new()
 		character_button.text = "Play as %s" % character_info.display_name
-		character_button.custom_minimum_size = Vector2(400, 60)
+		character_button.custom_minimum_size = Vector2(350, 60)
 		character_button.add_theme_font_size_override("font_size", 18)
 		
 		# Add character details as tooltip
@@ -66,7 +70,28 @@ func _load_available_recordings() -> void:
 		# Connect button signal
 		character_button.pressed.connect(_on_character_selected.bind(character_button))
 		
-		npc_list.add_child(character_button)
+		# Create delete button
+		var delete_button = Button.new()
+		delete_button.text = "Delete"
+		delete_button.custom_minimum_size = Vector2(80, 60)
+		delete_button.add_theme_font_size_override("font_size", 14)
+		delete_button.add_theme_color_override("font_color", Color.RED)
+		delete_button.tooltip_text = "Delete %s permanently" % character_info.display_name
+		
+		# Store recording data in the delete button too
+		delete_button.set_meta("recording_path", recording_path)
+		delete_button.set_meta("player_number", player_number)
+		delete_button.set_meta("recording_name", recording_name)
+		delete_button.set_meta("character_info", character_info)
+		
+		# Connect delete button signal
+		delete_button.pressed.connect(_on_delete_character_pressed.bind(delete_button))
+		
+		# Add buttons to container
+		character_container.add_child(character_button)
+		character_container.add_child(delete_button)
+		
+		npc_list.add_child(character_container)
 
 func _get_all_recording_files() -> Array[String]:
 	"""Get all recording files sorted by player number"""
@@ -230,3 +255,88 @@ func _start_game_with_all_npcs() -> void:
 	
 	# Change to the main game scene
 	get_tree().change_scene_to_file("res://scenes/launch_blocks.tscn")
+
+func _on_delete_character_pressed(delete_button: Button) -> void:
+	"""Handle delete character button press"""
+	var recording_path = delete_button.get_meta("recording_path")
+	var character_info = delete_button.get_meta("character_info")
+	var recording_name = delete_button.get_meta("recording_name")
+	
+	print("[MainMenu] Delete requested for character: %s" % character_info.display_name)
+	
+	# Show confirmation dialog
+	_show_delete_confirmation(character_info.display_name, recording_path, recording_name)
+
+func _show_delete_confirmation(character_name: String, recording_path: String, recording_filename: String) -> void:
+	"""Show confirmation dialog before deleting a character"""
+	# Create confirmation dialog
+	var dialog = AcceptDialog.new()
+	dialog.title = "Delete Character"
+	dialog.dialog_text = "Are you sure you want to delete '%s'?\n\nThis will permanently remove the recording file:\n%s\n\nThis action cannot be undone." % [character_name, recording_filename]
+	dialog.size = Vector2(400, 200)
+	
+	# Add to scene
+	add_child(dialog)
+	
+	# Connect signals
+	dialog.confirmed.connect(_confirm_delete_character.bind(recording_path, character_name))
+	dialog.canceled.connect(_cancel_delete_character)
+	
+	# Show dialog
+	dialog.popup_centered()
+	
+	# Store reference to dialog for cleanup
+	dialog.set_meta("is_delete_dialog", true)
+
+func _confirm_delete_character(recording_path: String, character_name: String) -> void:
+	"""Actually delete the character recording file"""
+	print("[MainMenu] Confirmed deletion of character: %s" % character_name)
+	
+	# Delete the file
+	var file = FileAccess.open(recording_path, FileAccess.READ)
+	if file:
+		file.close()
+		var result = DirAccess.remove_absolute(recording_path)
+		if result == OK:
+			print("[MainMenu] Successfully deleted recording: %s" % recording_path)
+			# Refresh the character list
+			_refresh_character_list()
+		else:
+			push_error("[MainMenu] Failed to delete recording: %s" % recording_path)
+			_show_error_dialog("Failed to delete character", "Could not delete the recording file.")
+	else:
+		push_error("[MainMenu] Recording file not found: %s" % recording_path)
+		_show_error_dialog("File not found", "The recording file could not be found.")
+
+func _cancel_delete_character() -> void:
+	"""Handle canceling character deletion"""
+	print("[MainMenu] Character deletion cancelled")
+
+func _show_error_dialog(title: String, message: String) -> void:
+	"""Show an error dialog"""
+	var dialog = AcceptDialog.new()
+	dialog.title = title
+	dialog.dialog_text = message
+	dialog.size = Vector2(300, 150)
+	
+	add_child(dialog)
+	dialog.popup_centered()
+	
+	# Auto-remove dialog after a delay
+	await get_tree().create_timer(3.0).timeout
+	if dialog and is_instance_valid(dialog):
+		dialog.queue_free()
+
+func _refresh_character_list() -> void:
+	"""Clear and reload the character list"""
+	print("[MainMenu] Refreshing character list...")
+	
+	# Clear existing children
+	for child in npc_list.get_children():
+		child.queue_free()
+	
+	# Wait a frame for cleanup
+	await get_tree().process_frame
+	
+	# Reload the list
+	_load_available_recordings()

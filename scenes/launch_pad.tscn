@@ -1,8 +1,8 @@
-[gd_scene load_steps=6 format=4 uid="uid://rfun8wpsyxxk"]
+[gd_scene load_steps=6 format=4 uid="uid://b8q676mrugme"]
 
 [ext_resource type="Texture2D" uid="uid://wlxfp1pwuo3s" path="res://assets/isometric_tiles.png" id="1_478fv"]
 [ext_resource type="Script" uid="uid://b3owc7nynmmhr" path="res://scripts/tile_map_layer.gd" id="2_ofsxf"]
-[ext_resource type="PackedScene" uid="uid://c1uhh8k6kfxw5" path="res://scenes/player1.tscn" id="3_aq4yb"]
+[ext_resource type="PackedScene" uid="uid://dj08qd6fwkhwr" path="res://scenes/player1.tscn" id="3_aq4yb"]
 
 [sub_resource type="TileSetAtlasSource" id="TileSetAtlasSource_iu15h"]
 texture = ExtResource("1_478fv")

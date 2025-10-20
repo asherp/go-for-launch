@@ -65,6 +65,8 @@ var follow_update_timer := 0.0  # Timer for updating follow target
 var follow_update_interval := 1.0  # Update target position every second
 var follow_distance := 20.0  # Distance to maintain from the followed NPC
 var is_playing_as_character := false  # True when playing as a selected character until interrupted
+var skip_next_mouse_click := false  # Flag to skip recording the next mouse click
+var skip_mouse_release := false  # Flag to skip recording the next mouse release
 
 # Character names are now loaded from character_names.txt via CharacterNames utility class
 
@@ -90,6 +92,10 @@ func _ready() -> void:
 		var global_data = get_node_or_null("/root/GlobalData")
 		if global_data and global_data.has_meta("spawn_as_character"):
 			var character_data = global_data.get_meta("spawn_as_character")
+			# Set flag BEFORE calling _spawn_as_character to prevent random spawn
+			is_playing_as_character = true
+			# Disable auto-recording when playing as existing character
+			auto_record_on_start = false
 			_spawn_as_character(character_data)
 		else:
 			var character_name = get_next_character_name()
@@ -105,14 +111,16 @@ func _ready() -> void:
 		# NPCs don't use random spawn
 		random_spawn = false
 	
-	# Random spawn for non-NPC players
-	if random_spawn and not is_npc:
+	# Random spawn for non-NPC players (but not when playing as existing character)
+	if random_spawn and not is_npc and not is_playing_as_character:
 		_spawn_on_random_tile()
 	
 	# Setup navigation agent
 	if navigation_agent:
 		navigation_agent.path_desired_distance = 4.0
 		navigation_agent.target_desired_distance = 4.0
+		# Connect to velocity_computed signal for modern navigation
+		navigation_agent.velocity_computed.connect(_on_velocity_computed)
 	
 	# Setup tile highlight
 	if tile_highlight:
@@ -168,10 +176,18 @@ func _input(event: InputEvent) -> void:
 	
 	# Check if we're in character takeover mode and user is providing input
 	if is_playing_as_character and _is_user_input(event):
-		print("[Player] User input detected - switching from playback to live control")
-		# Stop playback and switch to live control
+		print("[Player] User input detected - switching from playback to live recording")
+		# Stop playback and switch to live recording
 		if recorder and recorder.is_playing_back():
 			recorder.stop_playback()
+		
+		# Start recording new inputs (continuing from where playback left off)
+		if recorder:
+			recorder.start_recording(false)  # false = don't clear existing events
+			print("[Player] Started live recording - will append to original recording")
+			# Set flag for auto-save when recording stops
+			set_meta("was_character_takeover", true)
+		
 		is_playing_as_character = false
 		# Disable position correction for live control
 		if recorder:
@@ -220,10 +236,23 @@ func _input(event: InputEvent) -> void:
 			if clicked_npc and clicked_npc != self:  # Don't follow yourself
 				# Clicked on an NPC - start following it
 				print("[Click] Starting to follow NPC: %s" % clicked_npc.name)
+				# Set flag to skip recording this mouse click (both press and release)
+				skip_next_mouse_click = true
+				skip_mouse_release = true  # Also skip the mouse release event
 				follow_npc(clicked_npc)
 				return
 			else:
 				print("[Click] No NPC found or clicked self, proceeding with normal navigation")
+				
+				# If we were trying to click on an NPC but didn't find one, 
+				# check if there are any NPCs nearby and log debug info
+				var npcs = get_tree().get_nodes_in_group("npc")
+				if npcs.size() > 0:
+					print("[Click] Debug: %d NPCs exist but none detected at click position" % npcs.size())
+					for npc in npcs:
+						if npc and is_instance_valid(npc):
+							var distance = npc.global_position.distance_to(click_position)
+							print("[Click] Debug: NPC %s at %s, distance: %.1f" % [npc.name, npc.global_position, distance])
 			
 			# Not clicking on NPC - normal navigation
 			if navigation_agent:
@@ -422,6 +451,15 @@ func _physics_process(delta: float) -> void:
 	# Also use playback inputs when in character takeover mode
 	var should_use_playback_inputs = is_playback or is_npc or is_playing_as_character
 	
+	# Debug logging for character takeover mode
+	if is_playing_as_character and not is_npc:
+		if not has_meta("debug_logged_takeover"):
+			print("[Player] Character takeover mode active - using simulated inputs")
+			print("[Player] is_playback: %s, is_npc: %s, is_playing_as_character: %s" % [is_playback, is_npc, is_playing_as_character])
+			print("[Player] should_use_playback_inputs: %s" % should_use_playback_inputs)
+			print("[Player] is_in_playback_mode: %s, is_playing_as_character: %s" % [is_in_playback_mode, is_playing_as_character])
+			set_meta("debug_logged_takeover", true)
+	
 	# During playback OR for NPCs, use ONLY simulated inputs (ignore real keyboard)
 	var right_just_pressed: bool
 	var left_just_pressed: bool
@@ -442,6 +480,13 @@ func _physics_process(delta: float) -> void:
 		left_pressed = simulated_inputs.get("ui_left", false)
 		up_pressed = simulated_inputs.get("ui_up", false)
 		down_pressed = simulated_inputs.get("ui_down", false)
+		
+		# Debug logging for character takeover mode
+		if is_playing_as_character and not is_npc:
+			var any_simulated_input = right_pressed or left_pressed or up_pressed or down_pressed
+			if any_simulated_input and not has_meta("debug_logged_input"):
+				print("[Player] Character takeover received simulated input: right=%s, left=%s, up=%s, down=%s" % [right_pressed, left_pressed, up_pressed, down_pressed])
+				set_meta("debug_logged_input", true)
 	else:
 		# Only non-ghost players use real keyboard input
 		right_just_pressed = Input.is_action_just_pressed("ui_right")
@@ -473,8 +518,8 @@ func _physics_process(delta: float) -> void:
 			pass
 	
 	# Handle navigation (free movement, not restricted to diagonals)
-	# For NPCs following others, only navigate if not using keyboard input
-	if is_navigating and navigation_agent and not navigation_agent.is_navigation_finished():
+	# Modern NavigationAgent2D approach
+	if is_navigating and navigation_agent:
 		var should_navigate = true
 		
 		# If NPC is following and using keyboard input, pause navigation
@@ -482,15 +527,26 @@ func _physics_process(delta: float) -> void:
 			should_navigate = false
 		
 		if should_navigate:
-			var next_position = navigation_agent.get_next_path_position()
-			var direction_to_target = (next_position - global_position).normalized()
-			
-			# Move freely toward target (no diagonal restriction during navigation)
-			current_direction = direction_to_target
-	elif is_navigating and not (is_npc and is_following_npc and any_key_pressed):
-		# Navigation finished naturally (but not if NPC is following and using keyboard)
-		is_navigating = false
-		current_direction = Vector2.ZERO
+			if navigation_agent.is_navigation_finished():
+				# Navigation finished - check if we're close enough to target
+				var target_pos = navigation_agent.target_position
+				var distance_to_target = global_position.distance_to(target_pos)
+				if distance_to_target < 5.0:  # Within 5 pixels of target
+					is_navigating = false
+					velocity = Vector2.ZERO
+					print("[Player] Navigation completed - reached target at distance %.1fpx" % distance_to_target)
+				else:
+					# Still navigating but pathfinding is done - use direct movement
+					var direction_to_target = (target_pos - global_position).normalized()
+					velocity = direction_to_target * max_speed
+			else:
+				# Still navigating - let NavigationAgent2D handle the velocity
+				var next_position = navigation_agent.get_next_path_position()
+				var desired_velocity = (next_position - global_position).normalized() * max_speed
+				navigation_agent.set_velocity(desired_velocity)
+		else:
+			# Navigation paused - stop moving
+			velocity = Vector2.ZERO
 	
 	# Update direction based on manual input (most recently pressed key wins)
 	if right_just_pressed:
@@ -502,8 +558,8 @@ func _physics_process(delta: float) -> void:
 	elif down_just_pressed:
 		current_direction = southwest  # South = down-left
 	
-	if any_key_pressed or is_navigating:
-		
+	# Handle manual movement (keyboard input only)
+	if any_key_pressed and not is_navigating:
 		# Move in the current direction
 		if !current_direction.is_equal_approx(velocity.normalized()) and velocity.length() > 0.1:
 			velocity += current_direction * turn_speed * delta
@@ -512,33 +568,34 @@ func _physics_process(delta: float) -> void:
 		if velocity.length() > max_speed:
 			velocity = velocity.normalized() * max_speed
 		
-		# Only apply grid snapping for manual keyboard input, not during navigation
-		if any_key_pressed and not is_navigating:
-			# Snap to isometric grid based on movement direction
-			# Convert screen position to isometric coordinates
-			# iso_x and iso_y represent position in isometric grid space
-			var iso_x = (position.x / 32.0) + (position.y / 16.0)
-			var iso_y = (position.y / 16.0) - (position.x / 32.0)
-			
-			if current_direction == southeast or current_direction == northwest:
-				# Moving along iso_x axis (east/west) - lock iso_y to integer
-				iso_y = round(iso_y)
-			elif current_direction == northeast or current_direction == southwest:
-				# Moving along iso_y axis (north/south) - lock iso_x to integer
-				iso_x = round(iso_x)
-			
-			# Convert back to screen coordinates
-			position.x = (iso_x - iso_y) * 16.0
-			position.y = (iso_x + iso_y) * 8.0
-	else:
-		# No keys pressed - reset direction lock and apply friction
+		# Apply grid snapping for manual keyboard input
+		# Snap to isometric grid based on movement direction
+		# Convert screen position to isometric coordinates
+		# iso_x and iso_y represent position in isometric grid space
+		var iso_x = (position.x / 32.0) + (position.y / 16.0)
+		var iso_y = (position.y / 16.0) - (position.x / 32.0)
+		
+		if current_direction == southeast or current_direction == northwest:
+			# Moving along iso_x axis (east/west) - lock iso_y to integer
+			iso_y = round(iso_y)
+		elif current_direction == northeast or current_direction == southwest:
+			# Moving along iso_y axis (north/south) - lock iso_x to integer
+			iso_x = round(iso_x)
+		
+		# Convert back to screen coordinates
+		position.x = (iso_x - iso_y) * 16.0
+		position.y = (iso_x + iso_y) * 8.0
+		
+		move_and_slide()
+	elif not is_navigating:
+		# No keys pressed and not navigating - apply friction
 		current_direction = Vector2.ZERO
 		if velocity != Vector2.ZERO:
 			velocity -= velocity.normalized() * friction * delta 
 			if velocity.length() < min_speed:
 				velocity = Vector2.ZERO
-	
-	move_and_slide()
+		move_and_slide()
+	# Note: Navigation movement is handled by _on_velocity_computed callback
 
 func get_next_floor_up(current_floor: Node, root: Node) -> Node:
 	# Define floor hierarchy (order matters - bottom to top)
@@ -994,11 +1051,15 @@ func print_recording_stats() -> void:
 func _on_recording_stopped() -> void:
 	"""Called when recording stops"""
 	print("[Player] Recording stopped callback")
-	# You can add custom logic here, like auto-saving
-	# save_recording_to_file()
+	# Auto-save if this was a hybrid recording (character takeover)
+	if is_playing_as_character or has_meta("was_character_takeover"):
+		print("[Player] Auto-saving hybrid recording...")
+		save_recording_to_file()
+		remove_meta("was_character_takeover")
 
 func _on_playback_started() -> void:
 	"""Called when playback starts"""
+	print("[Player] _on_playback_started() called - setting is_in_playback_mode = true")
 	is_in_playback_mode = true
 	playback_cancelled = false  # Reset cancellation flag
 	is_correcting_position = false  # Reset correction flag
@@ -1078,7 +1139,7 @@ func _on_playback_input(action: String, pressed: bool, click_position: Vector2) 
 				if navigation_agent:
 					navigation_agent.target_position = click_position
 					is_navigating = true
-					print("[Playback] Starting navigation to (%.1f, %.1f)" % [click_position.x, click_position.y])
+					print("[%s] Starting navigation to (%.1f, %.1f)" % [name, click_position.x, click_position.y])
 				
 				# Handle object interaction during playback
 				_handle_playback_object_interaction(click_position)
@@ -1099,6 +1160,7 @@ func start_playback(speed: float = 1.0, enable_position_correction: bool = false
 	
 	if await recorder.start_playback(speed, enable_position_correction):
 		print("[Player] Started playback at %.1fx speed" % speed)
+		print("[Player] Waiting for _on_playback_started() callback...")
 	else:
 		push_error("[Player] Failed to start playback")
 
@@ -1235,8 +1297,14 @@ func _on_position_deviation(actual: Vector2, expected: Vector2, deviation: float
 	if playback_cancelled or is_correcting_position:
 		return
 	
+	# Skip position correction while following an NPC
+	# When following an NPC, movement is controlled by the following system, not recorded inputs
+	if is_following_npc:
+		print("[%s] Skipping position correction - currently following NPC (deviation: %.1fpx)" % [name, deviation])
+		return
+	
 	if deviation > max_deviation_threshold:
-		print("[Playback] Position deviation %.1fpx exceeds threshold %.1fpx - starting position correction" % [deviation, max_deviation_threshold])
+		print("[%s] Position deviation %.1fpx exceeds threshold %.1fpx - starting position correction" % [name, deviation, max_deviation_threshold])
 		_start_position_correction(expected)
 
 ## Create visual markers for the next 3 recorded positions
@@ -1338,12 +1406,25 @@ func _start_position_correction(expected_position: Vector2) -> void:
 	# Find the next recorded position after current time
 	var next_position = _find_next_recorded_position(recorded_inputs, current_time)
 	if next_position.is_empty():
-		print("[Playback] No next position found - navigating to last position")
+		print("[%s] No next position found - navigating to last position" % name)
 		_navigate_to_last_position()
 		return
 	
-	# Calculate dT (time difference to next position)
-	var dT = next_position.timestamp - current_time
+	# Find the next non-position-checkpoint action to determine correction duration
+	var next_action = _find_next_non_position_action(recorded_inputs, current_time)
+	var correction_time_target = current_time
+	
+	if not next_action.is_empty():
+		# Use the timestamp of the next non-position-checkpoint action
+		correction_time_target = next_action.timestamp
+		print("[%s] Using next action '%s' at %.2fs for correction duration" % [name, next_action.action, next_action.timestamp])
+	else:
+		# Fallback: use the next position timestamp if no other actions found
+		correction_time_target = next_position.timestamp
+		print("[%s] No non-position actions found, using next position timestamp" % name)
+	
+	# Calculate dT (time difference to next action or position)
+	var dT = correction_time_target - current_time
 	correction_duration = dT
 	correction_start_time = Time.get_ticks_msec() / 1000.0
 	correction_target_position = next_position.position
@@ -1354,8 +1435,8 @@ func _start_position_correction(expected_position: Vector2) -> void:
 	if navigation_agent:
 		navigation_agent.target_position = next_position.position
 		is_navigating = true
-		print("[Playback] Navigating to correction target at (%.1f, %.1f) - dT: %.2fs" % [
-			next_position.position.x, next_position.position.y, dT
+		print("[%s] Navigating to correction target at (%.1f, %.1f) - dT: %.2fs" % [
+			name, next_position.position.x, next_position.position.y, dT
 		])
 
 ## Find the next recorded position after the given time
@@ -1377,10 +1458,41 @@ func _find_next_recorded_position(recorded_inputs: Array, current_time: float) -
 	
 	return best_position
 
+## Find the next non-position-checkpoint action after the given time
+func _find_next_non_position_action(recorded_inputs: Array, current_time: float) -> Dictionary:
+	"""Find the next action that is NOT a position_checkpoint after current time"""
+	var best_action = {}
+	var best_time = INF
+	
+	for i in range(recorded_inputs.size()):
+		var event = recorded_inputs[i]
+		if event.timestamp > current_time:
+			# Skip position_checkpoint events
+			if event.has("action") and event.action == "position_checkpoint":
+				continue
+			
+			# Find the earliest non-position-checkpoint action
+			if event.timestamp < best_time:
+				best_time = event.timestamp
+				best_action = {
+					"action": event.get("action", ""),
+					"timestamp": event.timestamp,
+					"index": i,
+					"event": event
+				}
+	
+	return best_action
+
 ## Update position correction system
 func _update_position_correction() -> void:
 	"""Update position correction system - check if correction time has elapsed"""
 	if not is_correcting_position:
+		return
+	
+	# Skip position correction while following an NPC
+	# When following an NPC, movement is controlled by the following system, not recorded inputs
+	if is_following_npc:
+		print("[%s] Skipping position correction - currently following NPC" % name)
 		return
 	
 	var elapsed_time = (Time.get_ticks_msec() / 1000.0) - correction_start_time
@@ -1392,11 +1504,11 @@ func _update_position_correction() -> void:
 		
 		if deviation <= max_deviation_threshold:
 			# Success! Resume normal playback
-			print("[Playback] Position correction successful - resuming playback")
+			print("[%s] Position correction successful - resuming playback" % name)
 			_resume_normal_playback()
 		else:
 			# Still too far - double the time window and find next waypoint
-			print("[Playback] Still too far (%.1fpx) - doubling time window" % deviation)
+			print("[%s] Still too far (%.1fpx) - doubling time window" % [name, deviation])
 			_double_time_window_and_find_next_waypoint()
 
 ## Resume normal playback after successful correction
@@ -1437,8 +1549,22 @@ func _double_time_window_and_find_next_waypoint() -> void:
 		_navigate_to_last_position()
 		return
 	
-	# Update correction parameters
-	correction_duration = new_dT
+	# Find the next non-position-checkpoint action within the doubled time window
+	var next_action = _find_next_non_position_action(recorded_inputs, current_time)
+	var correction_time_target = target_time
+	
+	if not next_action.is_empty() and next_action.timestamp <= target_time:
+		# Use the timestamp of the next non-position-checkpoint action within the window
+		correction_time_target = next_action.timestamp
+		print("[Playback] Using next action '%s' at %.2fs for doubled correction duration" % [next_action.action, next_action.timestamp])
+	else:
+		# Fallback: use the doubled time window
+		correction_time_target = target_time
+		print("[Playback] No non-position actions found within doubled window, using doubled time")
+	
+	# Update correction parameters with the new target time
+	var final_dT = correction_time_target - current_time
+	correction_duration = final_dT
 	correction_start_time = Time.get_ticks_msec() / 1000.0
 	correction_target_position = best_position.position
 	correction_waypoint_index = best_position.index
@@ -1607,11 +1733,24 @@ func _spawn_as_character(character_data: Dictionary) -> void:
 		
 		# Start playback after a short delay to ensure everything is set up
 		await get_tree().create_timer(0.5).timeout
-		start_playback(1.0, true)  # Start playback with position correction enabled
 		
-		# Set flag to indicate we're in character takeover mode
-		is_playing_as_character = true
+		# Flag already set in _ready() to prevent random spawn
 		print("[Player] Started character takeover mode - recording will play until you provide input")
+		
+		# Stop any current recording before starting playback
+		if recorder and recorder.is_recording:
+			print("[Player] Stopping current recording before starting playback")
+			recorder.stop_recording()
+		
+		# Start playback with position correction enabled
+		print("[Player] About to call recorder.start_playback(1.0, true)")
+		print("[Player] Recorder exists: %s" % (recorder != null))
+		if recorder:
+			print("[Player] Recorder has playback_started signal: %s" % recorder.has_signal("playback_started"))
+			print("[Player] Recorder is_recording: %s" % recorder.is_recording)
+		var playback_result = await recorder.start_playback(1.0, true)
+		print("[Player] recorder.start_playback() returned: %s" % playback_result)
+		print("[Player] Character takeover playback started")
 
 ## Spawn player on a random tile on the specified floor
 func _spawn_on_random_tile() -> void:
@@ -1672,15 +1811,23 @@ func _spawn_on_random_tile() -> void:
 func get_npc_at_position(click_position: Vector2) -> Node:
 	"""Check if there's an NPC at the clicked position"""
 	var npcs = get_tree().get_nodes_in_group("npc")
-	var click_radius = 20.0  # Radius to check for NPCs
+	var click_radius = 40.0  # Increased radius to check for NPCs
 	
 	print("[NPC Detection] Checking for NPCs at click position: %s" % click_position)
 	print("[NPC Detection] Found %d NPCs in group" % npcs.size())
 	
+	# Debug: List all NPCs found
+	for i in range(npcs.size()):
+		var npc = npcs[i]
+		if npc and is_instance_valid(npc):
+			print("[NPC Detection] NPC %d: %s at %s (valid: %s)" % [i, npc.name, npc.global_position, is_instance_valid(npc)])
+		else:
+			print("[NPC Detection] NPC %d: INVALID or NULL" % i)
+	
 	for npc in npcs:
 		if npc and is_instance_valid(npc):
 			var distance = npc.global_position.distance_to(click_position)
-			print("[NPC Detection] NPC %s at %s, distance: %.1f" % [npc.name, npc.global_position, distance])
+			print("[NPC Detection] NPC %s at %s, distance: %.1f (radius: %.1f)" % [npc.name, npc.global_position, distance, click_radius])
 			if distance <= click_radius:
 				print("[NPC Detection] Found NPC within radius: %s" % npc.name)
 				return npc
@@ -1719,7 +1866,7 @@ func follow_npc(npc: Node) -> void:
 			# Already close enough
 			is_navigating = false
 	
-	print("[Player] Started following NPC: %s" % npc.name)
+	print("[%s] Started following NPC: %s" % [name, npc.name])
 	
 	# Add visual feedback
 	_add_follow_indicator(npc)
@@ -1744,6 +1891,11 @@ func stop_following_npc() -> void:
 	
 	# Remove visual feedback
 	_remove_follow_indicator()
+
+func _on_velocity_computed(safe_velocity: Vector2) -> void:
+	"""Called when NavigationAgent2D computes a safe velocity"""
+	velocity = safe_velocity
+	move_and_slide()
 
 func _update_npc_following(delta: float) -> void:
 	"""Update NPC following system - called every physics frame"""
@@ -1866,10 +2018,12 @@ func _record_npc_follow_event(npc: Node) -> void:
 		return
 	
 	var current_time = Time.get_ticks_msec() / 1000.0
+	var recording_start_time = recorder.recording_start_time if recorder else current_time
+	var timestamp = current_time - recording_start_time
 	
 	# Create a special event for NPC following
 	var event = {
-		"timestamp": current_time,
+		"timestamp": timestamp,
 		"action": "npc_follow_start",
 		"pressed": true,
 		"npc_id": npc.name,
@@ -1880,7 +2034,7 @@ func _record_npc_follow_event(npc: Node) -> void:
 		"follow_distance": follow_distance
 	}
 	
-	print("[Player] Recording NPC follow start - NPC ID: %s" % npc.name)
+	print("[%s] Recording NPC follow start - NPC ID: %s" % [name, npc.name])
 	
 	# Record player position and state
 	event["player_position"] = {
@@ -1910,7 +2064,7 @@ func _record_npc_follow_event(npc: Node) -> void:
 		var recorded_inputs = recorder.get_recorded_inputs()
 		recorded_inputs.append(event)
 	
-	print("[Player] Recorded NPC follow start: %s at %s" % [npc.name, npc.global_position])
+	print("[%s] Recorded NPC follow start: %s at %s" % [name, npc.name, npc.global_position])
 
 func _record_npc_stop_follow_event() -> void:
 	"""Record when the player stops following an NPC"""
@@ -1918,10 +2072,12 @@ func _record_npc_stop_follow_event() -> void:
 		return
 	
 	var current_time = Time.get_ticks_msec() / 1000.0
+	var recording_start_time = recorder.recording_start_time if recorder else current_time
+	var timestamp = current_time - recording_start_time
 	
 	# Create a special event for stopping NPC following
 	var event = {
-		"timestamp": current_time,
+		"timestamp": timestamp,
 		"action": "npc_follow_stop",
 		"pressed": false
 	}
@@ -1987,9 +2143,9 @@ func _handle_playback_npc_follow_start() -> void:
 				# Restore original follow distance
 				follow_distance = original_distance
 				
-				print("[Playback] Started following NPC: %s (recorded distance: %.1f)" % [npc_id, recorded_follow_distance])
+				print("[%s] Started following NPC: %s (recorded distance: %.1f)" % [name, npc_id, recorded_follow_distance])
 			else:
-				print("[Playback] Could not find NPC with ID: %s" % npc_id)
+				print("[%s] Could not find NPC with ID: %s" % [name, npc_id])
 		else:
 			print("[Playback] NPC follow event missing required data")
 
@@ -1997,22 +2153,36 @@ func _handle_playback_npc_follow_stop() -> void:
 	"""Handle NPC follow stop during playback"""
 	if is_following_npc:
 		stop_following_npc()
-		print("[Playback] Stopped following NPC")
+		print("[%s] Stopped following NPC" % name)
 
 func _find_npc_by_id(npc_id: String) -> Node:
-	"""Find an NPC by its unique ID (name)"""
+	"""Find an NPC or player by its unique ID (name)"""
 	var npcs = get_tree().get_nodes_in_group("npc")
 	
-	print("[Playback] Looking for NPC with ID: %s" % npc_id)
+	print("[%s] Looking for character with ID: %s" % [name, npc_id])
 	print("[Playback] Available NPCs:")
 	for npc in npcs:
 		if npc and is_instance_valid(npc):
 			print("  - %s" % npc.name)
 			if npc.name == npc_id:
-				print("[Playback] Found matching NPC: %s" % npc.name)
+				print("[%s] Found matching NPC: %s" % [name, npc.name])
 				return npc
 	
-	print("[Playback] No matching NPC found for ID: %s" % npc_id)
+	# Also search for human players by name directly
+	print("[Playback] Searching for human players:")
+	var all_nodes = get_tree().get_nodes_in_group("")
+	for node in all_nodes:
+		if node.name == npc_id and node != self:  # Don't follow yourself
+			print("  - Found node with matching name: %s (type: %s)" % [node.name, node.get_class()])
+			# Check if it's a player-like node (has the methods we need)
+			if node.has_method("follow_npc") and node.has_method("stop_following_npc"):
+				print("  - %s (human player)" % node.name)
+				print("[%s] Found matching Player: %s" % [name, node.name])
+				return node
+			else:
+				print("    Node %s doesn't have required player methods" % node.name)
+	
+	print("[%s] No matching character found for ID: %s" % [name, npc_id])
 	return null
 
 func _connect_to_npc_synchronization() -> void:
@@ -2060,3 +2230,13 @@ func _on_timer_finished() -> void:
 	print("[Player] Timer finished - returning to main menu")
 	# Return to main menu
 	get_tree().change_scene_to_file("res://scenes/main_menu.tscn")
+
+func should_skip_mouse_click_recording() -> bool:
+	"""Check if the next mouse click should be skipped from recording"""
+	if skip_next_mouse_click:
+		skip_next_mouse_click = false  # Reset the flag
+		return true
+	if skip_mouse_release:
+		skip_mouse_release = false  # Reset the flag
+		return true
+	return false
