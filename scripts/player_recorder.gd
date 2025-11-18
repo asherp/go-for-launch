@@ -545,23 +545,9 @@ func _apply_position_checkpoint(event: Dictionary) -> void:
 	if not event.has("player_position"):
 		return
 	
-	var checkpoint_pos = event.player_position
-	var target_position = Vector2(checkpoint_pos.x, checkpoint_pos.y)
-	var current_position = player.global_position
-	var deviation = current_position.distance_to(target_position)
-	
-	# Apply checkpoint corrections (they're ground truth) but skip during navigation
-	var is_navigating = player.has_method("is_navigating") and player.is_navigating
-	if deviation > position_correction_threshold and not is_navigating:  # Use same threshold as main correction
-		player.global_position = target_position
-		
-		# Keep velocity intact to maintain momentum during correction
-		
-		# Set z-height if available
-		if event.has("z_height") and "z_height" in player:
-			player.z_height = event.z_height
-		
-		print("[%s] Position checkpoint applied - corrected %.1fpx deviation" % [player.name, deviation])
+	# Don't reset position directly - let the navigation-based correction system handle it
+	# The position_deviation signal will trigger navigation toward future positions
+	# Position checkpoints are still tracked and used for deviation calculation via _check_playback_position_accuracy()
 
 ## Apply navigation target during playback
 
@@ -679,21 +665,15 @@ func _check_playback_position_accuracy() -> void:
 	var expected_pos = expected.position
 	var deviation = actual_pos.distance_to(expected_pos)
 	
-	# Apply position correction if enabled and deviation is too large
-	# Skip correction during navigation to avoid conflicts with pathfinding
-	var is_navigating = player.has_method("is_navigating") and player.is_navigating
-	if position_correction_enabled and deviation > position_correction_threshold and not is_navigating:
-		player.global_position = expected_pos
-		# Keep velocity intact to maintain momentum
-		print("[%s] Position corrected - was %.1fpx off" % [player.name, deviation])
-	elif is_navigating and deviation > position_correction_threshold:
-		print("[%s] Skipping position correction during navigation - was %.1fpx off" % [player.name, deviation])
+	# Don't reset position directly - let the navigation-based correction system handle it
+	# The position_deviation signal will trigger _on_position_deviation in player_1.gd
+	# which will navigate toward future positions to catch up
 	
 	# Track for statistics
 	position_deviations.append(deviation)
 	max_deviation = max(max_deviation, deviation)
 	
-	# Emit signal for visualization or debugging
+	# Emit signal for navigation-based correction system
 	position_deviation.emit(actual_pos, expected_pos, deviation)
 
 ## Calculate deviation statistics

@@ -11,24 +11,21 @@ An isometric game with multi-floor navigation and player recording capabilities.
 
 ## Player Recording System
 
-The game includes a comprehensive recording system with two modes:
+The game includes a comprehensive recording system that records player input events:
 
-- **FULL Mode**: Records complete player state every frame (~90,000 data points/min)
-- **INPUT_ONLY Mode**: Records only inputs (~50-200 events/min) - **50-100x more efficient!**
+- **Input Recording**: Records only user inputs (key presses, mouse clicks) with timestamps
+- **Position Checkpoints**: Records player position every second for position tracking
+- **Efficient Storage**: Small file sizes (typically 5-10 KB per minute) perfect for speedruns and long sessions
 
 ### Quick Start
 
-1. Choose your recording mode in `scripts/player_1.gd`:
-   ```gdscript
-   var recording_mode := 1  # 0 = FULL, 1 = INPUT_ONLY (recommended)
-   ```
-
-2. The game automatically starts recording when you launch it
-3. Recording runs for 60 seconds by default
-4. When finished, the recording is automatically saved to a JSON file
+1. The game automatically starts recording when you launch it
+2. Recording runs for 30 seconds by default (configurable)
+3. When finished, the recording is automatically saved to `res://recordings/` directory
+4. Files are named using character names (e.g., `bill.json`, `billy_pilgrim.json`)
 5. The save location is printed to the console
 
-**INPUT_ONLY mode** produces tiny files (5-10 KB) perfect for speedruns and long sessions!
+**Input-only recording** produces tiny files perfect for speedruns and long sessions!
 
 ### Keyboard Controls
 

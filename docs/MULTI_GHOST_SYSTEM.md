@@ -4,7 +4,7 @@ The Multi-Ghost System automatically spawns multiple ghost players, each replayi
 
 ## How It Works
 
-1. **Automatic Discovery**: The system scans the `res://recordings/` directory for all `player_recording_*.json` files
+1. **Automatic Discovery**: The system scans the `res://recordings/` directory for all `*.json` recording files (named by character names like `bill.json`, `billy_pilgrim.json`, etc.)
 2. **Smart Floor Detection**: Each recording is analyzed to determine which floor it originally started on
 3. **Ghost Creation**: For each recording found, a new ghost player is created on the appropriate floor
 4. **Individual Playback**: Each ghost loads and replays its assigned recording
@@ -22,8 +22,8 @@ The Multi-Ghost System automatically spawns multiple ghost players, each replayi
 ## Scene Changes
 
 The `launch_blocks.tscn` scene now includes:
-- **GhostManager Node**: Replaces the single hardcoded ghost player
-- **Dynamic Ghost Creation**: Ghosts are created at runtime based on available recordings
+- **NPCManager Node**: Manages spawning of multiple NPC players
+- **Dynamic NPC Creation**: NPCs are created at runtime based on available recordings
 
 ## Controls
 
@@ -32,11 +32,11 @@ The `launch_blocks.tscn` scene now includes:
 
 ## Configuration
 
-You can modify the ghost manager behavior by editing `scripts/ghost_manager.gd`:
+You can modify the NPC manager behavior by editing `scripts/npc_manager.gd`:
 
 ```gdscript
-@export var ghost_spacing: float = 32.0  # Horizontal spacing between ghosts
-@export var ghost_colors: Array[Color] = [...]  # Customize ghost colors
+@export var npc_spacing: float = 32.0  # Horizontal spacing between NPCs
+@export var npc_colors: Array[Color] = [...]  # Customize NPC colors
 @export var recordings_directory: String = "res://recordings"  # Change directory
 ```
 
@@ -44,16 +44,16 @@ You can modify the ghost manager behavior by editing `scripts/ghost_manager.gd`:
 
 When you run the scene, you'll see console output like:
 ```
-[GhostManager] Found 3 recordings, spawning ghosts...
-[GhostManager] Spawned ghost 1 for recording: player_recording_20250113_143022.json
-[GhostManager] Spawned ghost 2 for recording: player_recording_20250113_142156.json
-[GhostManager] Spawned ghost 3 for recording: player_recording_20250113_141834.json
-[GhostManager] Ghost 1 loaded recording: player_recording_20250113_143022.json
-[GhostManager] Ghost 1 started playback
-[GhostManager] Ghost 2 loaded recording: player_recording_20250113_142156.json
-[GhostManager] Ghost 2 started playback
-[GhostManager] Ghost 3 loaded recording: player_recording_20250113_141834.json
-[GhostManager] Ghost 3 started playback
+[NPCManager] Found 3 recordings, spawning NPCs...
+[NPCManager] Spawned NPC 1 for recording: bill.json
+[NPCManager] Spawned NPC 2 for recording: billy_pilgrim.json
+[NPCManager] Spawned NPC 3 for recording: doc_brown.json
+[NPCManager] NPC 1 loaded recording: bill.json
+[NPCManager] NPC 1 started playback
+[NPCManager] NPC 2 loaded recording: billy_pilgrim.json
+[NPCManager] NPC 2 started playback
+[NPCManager] NPC 3 loaded recording: doc_brown.json
+[NPCManager] NPC 3 started playback
 ```
 
 ## Use Cases
@@ -66,8 +66,9 @@ When you run the scene, you'll see console output like:
 
 ## Technical Details
 
-- Each ghost uses the same `player_1.gd` script with `is_ghost = true`
-- Ghosts are positioned on the FirstFloor with horizontal spacing
+- Each NPC uses the same `player_1.gd` script with `is_npc = true`
+- NPCs are positioned on the appropriate floor with horizontal spacing
 - Recordings are sorted by modification time (newest first)
-- Position correction is disabled for multiple ghosts to prevent conflicts
-- Each ghost gets a unique color from the predefined palette
+- Position correction is enabled for NPCs to ensure accurate replay
+- Each NPC gets a unique color from the predefined palette
+- NPCs use character names from the recording filenames

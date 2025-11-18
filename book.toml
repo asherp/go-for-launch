@@ -1,0 +1,33 @@
+[book]
+title = "Go For Launch Documentation"
+authors = ["Go For Launch Team"]
+description = "Documentation for the Go For Launch game project"
+language = "en"
+multilingual = false
+src = "docs"
+
+[build]
+build-dir = "book"
+create-missing = true
+
+[output.html]
+default-theme = "navy"
+preferred-dark-theme = "navy"
+git-repository-url = ""
+edit-url-template = ""
+git-repository-icon = "fa-github"
+search.enable = true
+search.limit-results = 30
+search.teaser-word-count = 30
+search.use-boolean-and = true
+search.boost-title = 2
+search.boost-hierarchy = 1
+search.boost-paragraph = 1
+search.expand = true
+search.heading-split-level = 3
+search.copy-button = true
+search.result-scroll-margin = 100
+
+[output.html.footer]
+content = "Built with mdBook"
+

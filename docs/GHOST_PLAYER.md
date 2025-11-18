@@ -14,7 +14,7 @@ The Ghost Player is an NPC that automatically loads and replays the most recent 
 
 ## How It Works
 
-The Ghost Player uses the **exact same script** (`player_1.gd`) as the main player, but with the `is_ghost` flag set to `true`. This ensures:
+The Ghost Player uses the **exact same script** (`player_1.gd`) as the main player, but with the `is_npc` flag set to `true`. This ensures:
 - Identical physics and movement behavior
 - No code duplication or maintenance overhead
 - User input is disabled (ghost only responds to playback)
@@ -30,8 +30,8 @@ When the scene starts:
 
 The Ghost Player uses the same `player_1.gd` script with these special exported variables:
 
-- **is_ghost**: Set to `true` to enable ghost mode (disables user input)
-- **ghost_color**: The color/transparency of the ghost (default: semi-transparent blue)
+- **is_npc**: Set to `true` to enable NPC/ghost mode (disables user input)
+- **npc_color**: The color/transparency of the ghost (default: semi-transparent blue)
 - **loop_playback**: Whether to loop when playback finishes (default: true)
 
 ## Scene Structure
@@ -51,12 +51,12 @@ The `NavigationAgent2D` is essential for replaying click-to-move navigation that
 
 ### Creating a Ghost Player
 
-Simply add a `CharacterBody2D` with the `player_1.gd` script and set `is_ghost = true`:
+Simply add a `CharacterBody2D` with the `player_1.gd` script and set `is_npc = true`:
 
 1. Duplicate your main player node in the scene
-2. Rename it to "GhostPlayer"
-3. In the Inspector, check the `is_ghost` property
-4. Optionally adjust `ghost_color` to change appearance
+2. Rename it to "GhostPlayer" or any NPC name
+3. In the Inspector, check the `is_npc` property
+4. Optionally adjust `npc_color` to change appearance
 
 ### In Code
 
@@ -67,11 +67,11 @@ var ghost = get_node("FirstFloor/GhostPlayer")
 # Stop looping
 ghost.loop_playback = false
 
-# Change ghost color
-ghost.ghost_color = Color(1.0, 0.5, 0.5, 0.5)  # Semi-transparent red
+# Change NPC color
+ghost.npc_color = Color(1.0, 0.5, 0.5, 0.5)  # Semi-transparent red
 
-# Manually load a specific recording
-if ghost.recorder.load_from_file("res://recordings/player_recording_20251013_225901.json"):
+# Manually load a specific recording (using character name)
+if ghost.recorder.load_from_file("res://recordings/bill.json"):
     await ghost.recorder.start_playback(1.0, true)
 ```
 
@@ -79,7 +79,7 @@ if ghost.recorder.load_from_file("res://recordings/player_recording_20251013_225
 
 1. Select the `GhostPlayer` node in the scene tree
 2. Adjust the exported properties in the Inspector
-3. Change `ghost_color` to customize appearance
+3. Change `npc_color` to customize appearance
 4. Disable `loop_playback` if you want playback to stop after one run
 
 ## Use Cases
@@ -92,14 +92,14 @@ if ghost.recorder.load_from_file("res://recordings/player_recording_20251013_225
 
 ## Technical Details
 
-The Ghost Player **reuses the exact same `player_1.gd` script** with the `is_ghost` flag enabled:
+The Ghost Player **reuses the exact same `player_1.gd` script** with the `is_npc` flag enabled:
 
-### How Ghost Mode Works
+### How NPC/Ghost Mode Works
 
-1. **Input Blocking**: When `is_ghost = true`, the `_input()` function returns early, blocking all keyboard/mouse input
-2. **Auto-load on Start**: Ghost automatically loads the most recent recording from `res://recordings/`
+1. **Input Blocking**: When `is_npc = true`, the `_input()` function returns early, blocking all keyboard/mouse input
+2. **Auto-load on Start**: NPC automatically loads the most recent recording from `res://recordings/`
 3. **Playback Mode**: Uses the existing playback system that all players have
-4. **Visual Distinction**: Sprite is tinted with `ghost_color` (semi-transparent blue by default)
+4. **Visual Distinction**: Sprite is tinted with `npc_color` (semi-transparent blue by default)
 5. **Loop on Finish**: When playback ends, it automatically restarts if `loop_playback = true`
 
 ### Benefits of Code Reuse
@@ -130,7 +130,7 @@ The Ghost Player **reuses the exact same `player_1.gd` script** with the `is_gho
 - Check that physics settings haven't changed
 
 **Ghost is hard to see:**
-- Adjust the `ghost_color` property
+- Adjust the `npc_color` property
 - Increase alpha channel for more opacity
 - Add a glow effect in the shader
 

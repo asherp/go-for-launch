@@ -1,6 +1,6 @@
 # Player Recording System
 
-A comprehensive system for recording and analyzing player positions and actions over time in your Godot game.
+A comprehensive system for recording and replaying player input events with timestamps, along with position checkpoints for accurate playback in your Godot game.
 
 ## Overview
 
@@ -11,15 +11,14 @@ The recording system consists of two main components:
 
 ## Features
 
-- ✅ Record player position, velocity, and state every frame
-- ✅ Track jump states and z-height (isometric)
-- ✅ Record input states (keyboard and mouse)
+- ✅ Record player input events (key presses, mouse clicks) with timestamps
+- ✅ Record position checkpoints every second for position tracking
 - ✅ Track which floor/tile the player is on
 - ✅ Save/load recordings as JSON files
-- ✅ Get statistics (distance, speed, jumps, etc.)
-- ✅ Query specific timepoints with interpolation
-- ✅ Automatic recording on game start with configurable duration
+- ✅ Get statistics (event counts, duration, action breakdown)
+- ✅ Automatic recording on game start with configurable duration (default: 30 seconds)
 - ✅ Manual recording control via keyboard shortcuts
+- ✅ Character name-based file naming system
 
 ## Quick Start
 
@@ -37,15 +36,16 @@ In `scripts/player_1.gd`, you can adjust these variables:
 
 ```gdscript
 var auto_record_on_start := true   # Start recording when game starts
-var auto_record_duration := 60.0   # Record for 60 seconds (0 = infinite)
+var auto_record_duration := 30.0   # Record for 30 seconds (0 = infinite)
 ```
 
 ### 3. Play Your Game
 
 When you run the game:
 - Recording will start automatically
-- After 60 seconds, it will stop and save to `user://player_recording_YYYYMMDD_HHMMSS.json`
+- After 30 seconds (default), it will stop and save to `res://recordings/[character_name].json`
 - The file location will be printed to the console
+- Character names are automatically assigned from `assets/character_names.txt`
 
 ## Keyboard Controls
 
@@ -58,28 +58,42 @@ While playing:
 
 ## Recorded Data
 
-Each frame captures:
+The system records input events and position checkpoints:
 
-```gdscript
+### Input Events
+Each input change is recorded as an event:
+
+```json
 {
-    "timestamp": 5.432,              # Time in seconds
-    "position": {"x": 256, "y": 128},
-    "velocity": {"x": 40.5, "y": 0.0},
-    "z_height": 0.0,
-    "direction": {"x": 0.89, "y": 0.45},
-    "is_jumping": false,
-    "jump_time": 0.0,
-    "floor_name": "GroundFloor",
+    "timestamp": 5.432,
+    "action": "right",
+    "pressed": true
+}
+```
+
+### Position Checkpoints
+Position is recorded every second (configurable):
+
+```json
+{
+    "timestamp": 5.0,
+    "action": "position_checkpoint",
+    "player_position": {"x": 256, "y": 128},
+    "floor": "GroundFloor",
     "tile_position": {"x": 4, "y": 2},
-    "inputs": {
-        "right": false,
-        "left": false,
-        "up": true,
-        "down": false,
-        "jump": false,
-        "mouse_click": false,
-        "mouse_pos": {"x": 320, "y": 240}
-    }
+    "z_height": 0.0
+}
+```
+
+### Navigation Events
+Mouse clicks for navigation are also recorded:
+
+```json
+{
+    "timestamp": 3.245,
+    "action": "mouse_click",
+    "pressed": true,
+    "position": {"x": 320, "y": 240}
 }
 ```
 
@@ -99,7 +113,7 @@ await get_tree().create_timer(30.0).timeout
 
 # Stop and save
 player.stop_recording()
-player.save_recording_to_file("user://my_recording.json")
+player.save_recording_to_file()  # Saves to res://recordings/ with character name
 ```
 
 ### Example 2: Get Statistics
@@ -110,35 +124,34 @@ player.print_recording_stats()
 
 # Or get as dictionary
 var stats = player.recorder.get_statistics()
-print("Player traveled: ", stats.total_distance, " pixels")
-print("Average speed: ", stats.avg_speed, " px/s")
-print("Jumps: ", stats.jump_count)
+print("Events recorded: ", stats.event_count)
+print("Duration: ", stats.duration, " seconds")
+print("Events per second: ", stats.events_per_second)
 ```
 
-### Example 3: Query Specific Time
+### Example 3: Get Expected Position at Time
 
 ```gdscript
-# Get player state at 10 seconds into the recording
-var frame = player.recorder.get_frame_at_time(10.0)
-if frame:
-    print("Position at 10s: ", frame.global_position)
-    print("Was jumping: ", frame.is_jumping)
-    print("Floor: ", frame.floor_name)
+# Get expected position at 10 seconds into the recording
+var expected = player.recorder.get_expected_position_at_time(10.0)
+if not expected.is_empty():
+    print("Position at 10s: ", expected.position)
+    print("Floor: ", expected.floor)
 ```
 
 ### Example 4: Load and Analyze
 
 ```gdscript
 # Load a saved recording
-player.load_recording_from_file("user://player_recording_20250114_153000.json")
+player.load_recording_from_file("res://recordings/bill.json")
 
-# Get all frames
-var frames = player.recorder.get_recording()
+# Get all recorded inputs
+var events = player.recorder.get_recorded_inputs()
 
 # Analyze behavior
-for frame in frames:
-    if frame.is_jumping:
-        print("Jump at time %.2f on floor %s" % [frame.timestamp, frame.floor_name])
+for event in events:
+    if event.action == "jump" and event.pressed:
+        print("Jump at time %.2f" % event.timestamp)
 ```
 
 ### Example 5: Export to CSV
@@ -147,33 +160,30 @@ See `scripts/recording_demo.gd` for a complete example of exporting recording da
 
 ## File Locations
 
-Recordings are saved to Godot's user directory:
+Recordings are saved to `res://recordings/` directory:
 
-- **Windows**: `%APPDATA%\Godot\app_userdata\[project_name]/`
-- **macOS**: `~/Library/Application Support/Godot/app_userdata/[project_name]/`
-- **Linux**: `~/.local/share/godot/app_userdata/[project_name]/`
-
-The exact path is printed when you save a recording.
+- Files are named using character names from `assets/character_names.txt`
+- Examples: `bill.json`, `billy_pilgrim.json`, `doc_brown.json`
+- The exact filename is printed when you save a recording
+- Character names are automatically assigned to new players
 
 ## Advanced Features
 
-### Variable Recording Rate
+### Position Checkpoint Interval
 
-Record at a lower framerate to save memory:
-
-```gdscript
-# Record 10 times per second instead of every frame
-player.start_recording(0.1)
-```
-
-### Frame Interpolation
-
-Get smooth data between recorded frames:
+Adjust how often position checkpoints are recorded:
 
 ```gdscript
-var frame = player.recorder.get_frame_at_time(5.5)
-# Returns interpolated data between frames at 5.4s and 5.6s
+# In player_recorder.gd, modify:
+position_checkpoint_interval = 0.5  # Record position every 0.5 seconds
 ```
+
+### Character Name System
+
+The system uses character names from `assets/character_names.txt`:
+- Automatically assigns names to new players
+- Prevents duplicate names
+- Uses lowercase with underscores (e.g., `billy_pilgrim`)
 
 ### Compare Recordings
 
@@ -182,14 +192,14 @@ var frame = player.recorder.get_frame_at_time(5.5)
 var recorder1 = PlayerRecorder.new()
 var recorder2 = PlayerRecorder.new()
 
-recorder1.load_from_file("user://attempt1.json")
-recorder2.load_from_file("user://attempt2.json")
+recorder1.load_from_file("res://recordings/bill.json")
+recorder2.load_from_file("res://recordings/billy_pilgrim.json")
 
 var stats1 = recorder1.get_statistics()
 var stats2 = recorder2.get_statistics()
 
 if stats1.duration < stats2.duration:
-    print("First attempt was faster!")
+    print("First recording was faster!")
 ```
 
 ## Use Cases
@@ -205,17 +215,18 @@ if stats1.duration < stats2.duration:
 
 ## Performance Notes
 
-- Recording every frame adds minimal overhead (~0.1ms per frame)
-- One minute at 60 FPS = ~3,600 frames
-- JSON file size: approximately 500-700 KB per minute of gameplay
-- Consider using recording intervals for longer sessions
+- Recording input events adds minimal overhead (~0.01ms per event)
+- One minute of gameplay = ~50-200 input events
+- JSON file size: approximately 5-10 KB per minute of gameplay
+- Position checkpoints add ~1 event per second
+- Perfect for long recording sessions and speedruns
 
 ## Future Enhancements
 
 Potential features to add:
 
-- [ ] Playback system (replay recordings)
-- [ ] Visual replay with ghost player
+- [x] Playback system (replay recordings) - ✅ Implemented
+- [x] Visual replay with NPC/ghost players - ✅ Implemented
 - [ ] Recording compression
 - [ ] Binary format for smaller files
 - [ ] Network synchronization for multiplayer
@@ -233,9 +244,9 @@ Potential features to add:
 - Use `ProjectSettings.globalize_path("user://")` to find the user directory
 
 **Large file sizes:**
-- Use recording intervals: `start_recording(0.1)` for 10 FPS
-- Delete old recordings periodically
-- Consider implementing compression
+- Input-only recording already produces very small files (5-10 KB/min)
+- Delete old recordings periodically if needed
+- Consider implementing compression for very long sessions
 
 ## API Reference
 

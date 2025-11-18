@@ -4,3 +4,7 @@
 
 # Player recordings (optional - uncomment to ignore)
 # recordings/*.json
+
+# mdbook build output and cache
+book/
+.mdbook/

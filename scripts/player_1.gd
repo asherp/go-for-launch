@@ -61,6 +61,7 @@ var correction_waypoint_index := 0  # Index of the waypoint we're navigating to
 # NPC following system
 var is_following_npc := false  # Flag to indicate we're following an NPC
 var followed_npc: Node = null  # Reference to the NPC being followed
+var follow_indicator: Node2D = null  # Direct reference to the follow indicator
 var follow_update_timer := 0.0  # Timer for updating follow target
 var follow_update_interval := 1.0  # Update target position every second
 var follow_distance := 20.0  # Distance to maintain from the followed NPC
@@ -121,6 +122,16 @@ func _ready() -> void:
 		navigation_agent.target_desired_distance = 4.0
 		# Connect to velocity_computed signal for modern navigation
 		navigation_agent.velocity_computed.connect(_on_velocity_computed)
+		# Wait for navigation map to be ready (needed for Godot 4)
+		await get_tree().process_frame
+		if navigation_agent:
+			# Ensure navigation map is set up from the current floor
+			var current_floor = get_parent()
+			if current_floor is TileMapLayer:
+				# NavigationAgent2D should automatically use the navigation map from TileMapLayer
+				print("[Player] NavigationAgent2D initialized on floor: ", current_floor.name)
+			else:
+				push_warning("[Player] Parent is not a TileMapLayer!")
 	
 	# Setup tile highlight
 	if tile_highlight:
@@ -259,20 +270,26 @@ func _input(event: InputEvent) -> void:
 				var target_position = click_position
 				var current_floor = get_parent()
 				
+				print("[Click] Setting navigation target - navigation_agent exists: %s" % (navigation_agent != null))
+				print("[Click] Current floor: %s (is TileMapLayer: %s)" % [current_floor.name if current_floor else "null", current_floor is TileMapLayer])
+				
 				# Convert to tile coordinates using tilemap's coordinate system
 				if current_floor is TileMapLayer:
 					navigation_target_tile = current_floor.local_to_map(current_floor.to_local(target_position))
 					# Convert back to world position at tile center
 					target_position = current_floor.to_global(current_floor.map_to_local(navigation_target_tile))
+					print("[Click] Converted target: tile=%s, world_pos=%s" % [navigation_target_tile, target_position])
 				else:
 					# Fallback
 					target_position = snap_to_tile_center(target_position)
 					var iso_x = (target_position.x / 32.0) + (target_position.y / 16.0)
 					var iso_y = (target_position.y / 16.0) - (target_position.x / 32.0)
 					navigation_target_tile = Vector2i(round(iso_x), round(iso_y))
+					print("[Click] Fallback conversion: tile=%s, world_pos=%s" % [navigation_target_tile, target_position])
 				
 				navigation_agent.target_position = target_position
 				is_navigating = true
+				print("[Click] Navigation started: is_navigating=%s, target_position=%s" % [is_navigating, navigation_agent.target_position])
 				
 				# Stop following NPC if we click elsewhere
 				if is_following_npc:
@@ -539,11 +556,29 @@ func _physics_process(delta: float) -> void:
 					# Still navigating but pathfinding is done - use direct movement
 					var direction_to_target = (target_pos - global_position).normalized()
 					velocity = direction_to_target * max_speed
+					move_and_slide()
 			else:
 				# Still navigating - let NavigationAgent2D handle the velocity
 				var next_position = navigation_agent.get_next_path_position()
-				var desired_velocity = (next_position - global_position).normalized() * max_speed
-				navigation_agent.set_velocity(desired_velocity)
+				var distance_to_next = global_position.distance_to(next_position)
+				
+				# Debug output
+				if not has_meta("last_nav_debug_time") or Time.get_ticks_msec() - get_meta("last_nav_debug_time", 0) > 500:
+					print("[Nav] Next position: %s, distance: %.1f, current_pos: %s" % [next_position, distance_to_next, global_position])
+					set_meta("last_nav_debug_time", Time.get_ticks_msec())
+				
+				if distance_to_next > 0.1:  # Only move if there's a meaningful distance
+					var desired_velocity = (next_position - global_position).normalized() * max_speed
+					# Set velocity directly as fallback, then let NavigationAgent2D refine it
+					velocity = desired_velocity
+					navigation_agent.set_velocity(desired_velocity)
+					move_and_slide()  # Move immediately, callback will refine if needed
+				else:
+					# Too close to next waypoint - use direct movement to target
+					var target_pos = navigation_agent.target_position
+					var direction_to_target = (target_pos - global_position).normalized()
+					velocity = direction_to_target * max_speed
+					move_and_slide()
 		else:
 			# Navigation paused - stop moving
 			velocity = Vector2.ZERO
@@ -1894,8 +1929,23 @@ func stop_following_npc() -> void:
 
 func _on_velocity_computed(safe_velocity: Vector2) -> void:
 	"""Called when NavigationAgent2D computes a safe velocity"""
-	velocity = safe_velocity
-	move_and_slide()
+	if safe_velocity.length() > 0.01:  # Only move if velocity is meaningful
+		velocity = safe_velocity
+		move_and_slide()
+		# Debug output (throttled)
+		if not has_meta("last_velocity_debug_time") or Time.get_ticks_msec() - get_meta("last_velocity_debug_time", 0) > 500:
+			print("[Nav] Velocity computed: %s, length: %.1f" % [safe_velocity, safe_velocity.length()])
+			set_meta("last_velocity_debug_time", Time.get_ticks_msec())
+	else:
+		# Velocity too small, might be stuck - try direct movement
+		if is_navigating and navigation_agent:
+			var target_pos = navigation_agent.target_position
+			var distance = global_position.distance_to(target_pos)
+			if distance > 5.0:
+				var direction = (target_pos - global_position).normalized()
+				velocity = direction * max_speed
+				move_and_slide()
+				print("[Nav] Using fallback direct movement, distance: %.1f" % distance)
 
 func _update_npc_following(delta: float) -> void:
 	"""Update NPC following system - called every physics frame"""
@@ -1943,11 +1993,9 @@ func _update_npc_following(delta: float) -> void:
 		pass
 	
 	# Update indicator position to follow the target NPC
-	var indicator_name = "PlayerFollowIndicator" if not is_npc else "NPCFollowIndicator"
-	var indicator = get_node_or_null(indicator_name)
-	if indicator and followed_npc and is_instance_valid(followed_npc):
+	if follow_indicator and is_instance_valid(follow_indicator) and followed_npc and is_instance_valid(followed_npc):
 		# Position the indicator above the target NPC
-		indicator.global_position = followed_npc.global_position + Vector2(0, -20)
+		follow_indicator.global_position = followed_npc.global_position + Vector2(0, -20)
 
 func _add_follow_indicator(npc: Node) -> void:
 	"""Add visual indicator to show which NPC is being followed"""
@@ -1957,9 +2005,12 @@ func _add_follow_indicator(npc: Node) -> void:
 	# Create a simple circle indicator that follows the target NPC
 	var indicator = Node2D.new()
 	
-	# Different indicator names and colors for player vs NPC following
+	# Use unique name that includes this player's name to avoid conflicts
+	var indicator_name = ("PlayerFollowIndicator_" + name) if not is_npc else ("NPCFollowIndicator_" + name)
+	indicator.name = indicator_name
+	
+	# Different indicator colors for player vs NPC following
 	if is_npc:
-		indicator.name = "NPCFollowIndicator"
 		var circle = Polygon2D.new()
 		circle.name = "Circle"
 		var points = PackedVector2Array()
@@ -1973,9 +2024,7 @@ func _add_follow_indicator(npc: Node) -> void:
 		circle.z_index = 99  # Slightly below player indicator
 		
 		indicator.add_child(circle)
-		indicator.position = Vector2(0, -15)  # Slightly lower than player indicator
 	else:
-		indicator.name = "PlayerFollowIndicator"
 		var circle = Polygon2D.new()
 		circle.name = "Circle"
 		var points = PackedVector2Array()
@@ -1989,10 +2038,19 @@ func _add_follow_indicator(npc: Node) -> void:
 		circle.z_index = 100  # Always on top
 		
 		indicator.add_child(circle)
-		indicator.position = Vector2(0, -20)  # Above the NPC
 	
-	# Add indicator to this player (not the NPC) so only this player can see it
-	add_child(indicator)
+	# Add indicator to scene root so it can follow the NPC independently
+	# Get the scene root (parent of the player's parent)
+	var scene_root = get_parent().get_parent() if get_parent() else get_tree().current_scene
+	if scene_root:
+		scene_root.add_child(indicator)
+		# Store direct reference to indicator for efficient updates
+		follow_indicator = indicator
+	else:
+		# Fallback: add to player if we can't find scene root
+		add_child(indicator)
+		follow_indicator = indicator
+		push_warning("[Player] Could not find scene root, added indicator to player")
 	
 	# Set initial position above the target NPC
 	if npc and is_instance_valid(npc):
@@ -2000,10 +2058,9 @@ func _add_follow_indicator(npc: Node) -> void:
 
 func _remove_follow_indicator() -> void:
 	"""Remove the follow indicator from this player"""
-	var indicator_name = "PlayerFollowIndicator" if not is_npc else "NPCFollowIndicator"
-	var indicator = get_node_or_null(indicator_name)
-	if indicator:
-		indicator.queue_free()
+	if follow_indicator and is_instance_valid(follow_indicator):
+		follow_indicator.queue_free()
+		follow_indicator = null
 		print("[Player] Removed follow indicator")
 
 func _remove_all_follow_indicators() -> void:
